@@ -4,12 +4,11 @@ Analyzes the target app URL, plans the test strategy, and initializes state fiel
 """
 
 import logging
-import os
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
+from providers import get_llm
 
 logger = logging.getLogger("bughunter.orchestrator")
 
@@ -18,10 +17,7 @@ class OrchestratorAgent:
     """Plans the testing strategy for a given web application URL."""
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model="claude-3-5-sonnet-20241022",
-            api_key=os.environ["ANTHROPIC_API_KEY"],
-        )
+        self.llm = get_llm()
 
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]

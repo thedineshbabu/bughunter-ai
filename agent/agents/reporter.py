@@ -5,12 +5,11 @@ Generates structured, actionable bug reports using Claude.
 
 import json
 import logging
-import os
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
+from providers import get_llm
 
 logger = logging.getLogger("bughunter.reporter")
 
@@ -19,10 +18,7 @@ class ReporterAgent:
     """Converts raw bug observations into structured, developer-ready bug reports."""
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model="claude-3-5-sonnet-20241022",
-            api_key=os.environ["ANTHROPIC_API_KEY"],
-        )
+        self.llm = get_llm()
 
     def _generate_report(self, bug: dict) -> dict:
         """Use Claude to enrich a raw bug observation into a full bug report."""
