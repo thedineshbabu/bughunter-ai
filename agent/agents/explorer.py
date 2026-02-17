@@ -4,12 +4,11 @@ Uses Playwright to navigate the app, capture screenshots, and log interaction st
 """
 
 import logging
-import os
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
+from providers import get_llm
 from tools.browser import BrowserTool
 from tools.screenshot import capture
 
@@ -22,10 +21,7 @@ class ExplorerAgent:
     """Navigates the target web app and collects screenshots + interaction steps."""
 
     def __init__(self):
-        self.llm = ChatAnthropic(
-            model="claude-3-5-sonnet-20241022",
-            api_key=os.environ["ANTHROPIC_API_KEY"],
-        )
+        self.llm = get_llm()
         self.browser = BrowserTool()
 
     def _ask_what_to_test(self, page_title: str, page_url: str, source_snippet: str) -> str:
