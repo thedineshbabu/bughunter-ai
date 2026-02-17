@@ -13,7 +13,7 @@ logger = logging.getLogger("bughunter.providers")
 DEFAULT_MODELS = {
     "anthropic": "claude-3-5-sonnet-20241022",
     "openai":    "gpt-4o",
-    "google":    "gemini-1.5-pro",
+    "google":    "gemini-2.0-flash",
     "groq":      "llama-3.3-70b-versatile",
     "mistral":   "mistral-large-latest",
     "ollama":    "llama3",
