@@ -64,10 +64,13 @@ const switchLink = {
 
 // ── Login Page ──────────────────────────────────────────────────────────────
 function Login() {
-  const { login } = useAuth();
+  const { user, login } = useAuth();
   const [form, setForm] = React.useState({ email: '', password: '' });
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+
+  // Redirect to dashboard once authenticated
+  if (user) return <Navigate to="/" replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -120,10 +123,13 @@ function Login() {
 
 // ── Register Page ───────────────────────────────────────────────────────────
 function Register() {
-  const { register } = useAuth();
+  const { user, register } = useAuth();
   const [form, setForm] = React.useState({ name: '', email: '', password: '', confirm: '' });
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
+
+  // Redirect to dashboard once authenticated
+  if (user) return <Navigate to="/" replace />;
 
   const handleSubmit = async (e) => {
     e.preventDefault();
