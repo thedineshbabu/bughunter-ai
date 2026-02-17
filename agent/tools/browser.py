@@ -44,13 +44,13 @@ class BrowserTool:
 
         logger.debug("Browser started")
 
-    def navigate(self, url: str, wait_until: str = "networkidle"):
+    def navigate(self, url: str, wait_until: str = "domcontentloaded"):
         """Navigate to a URL and wait for the page to load."""
         if not self.page:
             raise RuntimeError("Browser not started. Call start() first.")
         self._console_errors.clear()
         self._network_errors.clear()
-        self.page.goto(url, wait_until=wait_until, timeout=30_000)
+        self.page.goto(url, wait_until=wait_until, timeout=60_000)
         logger.debug(f"Navigated to: {url}")
 
     def screenshot(self) -> bytes:
