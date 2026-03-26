@@ -66,12 +66,120 @@ class BrowserTool:
         self.page.fill(selector, value, timeout=5_000)
         logger.debug(f"Filled '{selector}' with value")
 
-    def click(self, selector: str):
-        """Click the first element matching the selector."""
+    def click(self, selector: str, force: bool = False):
+        """Click the first element matching the selector.
+
+        Args:
+            selector: CSS selector for the target element.
+            force: If True, bypass actionability checks (useful when overlays
+                   intercept pointer events despite dismiss attempts).
+        """
         if not self.page:
             raise RuntimeError("Browser not started.")
-        self.page.click(selector, timeout=5_000)
-        logger.debug(f"Clicked '{selector}'")
+        self.page.click(selector, timeout=5_000, force=force)
+        logger.debug(f"Clicked '{selector}' (force={force})")
+
+    def dismiss_overlays(self):
+        """Try to dismiss common overlays: cookie consent banners, modals, etc.
+
+        Runs a series of heuristics to close elements that often block
+        interaction with the underlying page.
+        """
+        if not self.page:
+            return
+
+        # Common selectors for cookie-consent / privacy banners and generic modals.
+        # Order: most specific first, then generic patterns.
+        dismiss_selectors = [
+            # OneTrust / cookie-consent bars
+            "#onetrust-accept-btn-handler",
+            "#consent_blackbar button",
+            "#consent_blackbar a",
+            "[id*='consent'] button[id*='accept']",
+            "[id*='consent'] button",
+            "[class*='consent'] button[class*='accept']",
+            "[class*='consent'] button",
+            # CookieBot / generic cookie banners
+            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+            "[id*='cookie'] button[id*='accept']",
+            "[id*='cookie'] button",
+            "[class*='cookie'] button[class*='accept']",
+            "[class*='cookie'] button",
+            # Generic dismiss / close patterns
+            "button[class*='dismiss']",
+            "button[class*='close-banner']",
+            "button[aria-label='Close']",
+            "button[aria-label='Dismiss']",
+            "[class*='overlay'] button[class*='close']",
+            "[class*='modal'] button[class*='close']",
+        ]
+
+        dismissed = []
+        for sel in dismiss_selectors:
+            try:
+                element = self.page.query_selector(sel)
+                if element and element.is_visible():
+                    element.click(force=True)
+                    dismissed.append(sel)
+                    # Small pause so the banner animates away
+                    self.page.wait_for_timeout(500)
+            except Exception:
+                continue
+
+        # Fallback: remove blocking containers via JS.
+        # Handles elements with static IDs, dynamic IDs, and class-based overlays
+        # (e.g. TrustArc iframes whose IDs are generated at runtime).
+        removed = self.page.evaluate("""() => {
+            const removed = [];
+
+            // 1. Remove by exact ID
+            const ids = [
+                'consent_blackbar', 'onetrust-banner-sdk',
+                'CybotCookiebotDialog', 'truste-consent-track',
+                'trustarc-banner-overlay',
+            ];
+            for (const id of ids) {
+                const el = document.getElementById(id);
+                if (el) { el.remove(); removed.push('#' + id); }
+            }
+
+            // 2. Remove TrustArc overlay divs and iframes (dynamic IDs)
+            document.querySelectorAll(
+                '.truste_box_overlay, .truste_popframe, .truste_overlay, ' +
+                '[id^="pop-div"], [id^="pop-frame"], ' +
+                'iframe[name="trustarc_cm"]'
+            ).forEach(el => {
+                const desc = el.id || el.className || el.tagName;
+                el.remove();
+                removed.push(desc);
+            });
+
+            // 3. Remove any remaining full-screen overlays that block pointer events
+            document.querySelectorAll(
+                '[class*="overlay"], [class*="Overlay"]'
+            ).forEach(el => {
+                const style = window.getComputedStyle(el);
+                const isFullScreen = (
+                    style.position === 'fixed' &&
+                    parseInt(style.zIndex || 0) > 100
+                );
+                if (isFullScreen) {
+                    const desc = el.id || el.className || el.tagName;
+                    el.remove();
+                    removed.push(desc);
+                }
+            });
+
+            return removed;
+        }""")
+
+        if dismissed or removed:
+            logger.info(
+                f"Dismissed overlays — clicked: {dismissed}, "
+                f"removed via JS: {removed}"
+            )
+        else:
+            logger.debug("No overlays found to dismiss")
 
     def get_page_source(self) -> str:
         """Return the full HTML source of the current page."""
@@ -106,6 +214,20 @@ class BrowserTool:
             )
         except Exception:
             return []
+
+    def wait_for_navigation(self, timeout: int = 15_000):
+        """Wait for a navigation/redirect to complete (e.g. SSO/IDP redirect)."""
+        if not self.page:
+            raise RuntimeError("Browser not started.")
+        self.page.wait_for_load_state("domcontentloaded", timeout=timeout)
+        logger.debug(f"Navigation completed, now at: {self.page.url}")
+
+    def wait_for_selector(self, selector: str, timeout: int = 15_000):
+        """Wait for an element matching the selector to appear in the DOM."""
+        if not self.page:
+            raise RuntimeError("Browser not started.")
+        self.page.wait_for_selector(selector, timeout=timeout)
+        logger.debug(f"Selector '{selector}' found on page")
 
     def get_form_inputs(self) -> List[str]:
         """Return CSS selectors for all visible text/password/email inputs."""

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { createLogger, format, transports } from 'winston';
 
 import authRoutes from './routes/auth.routes.js';
@@ -19,15 +20,30 @@ export const logger = createLogger({
   transports: [new transports.Console()],
 });
 
+// ── Startup assertions — fail fast on missing/weak secrets ──────────────────
+const requiredEnv = [
+  { key: 'JWT_SECRET',                  minLen: 32, hint: 'generate with: openssl rand -hex 32' },
+  { key: 'CREDENTIALS_ENCRYPTION_KEY',  minLen: 64, hint: 'generate with: openssl rand -hex 32 (must be 32-byte hex = 64 chars)' },
+];
+
+for (const { key, minLen, hint } of requiredEnv) {
+  const val = process.env[key];
+  if (!val || val.length < minLen) {
+    logger.error(`FATAL: ${key} must be set and at least ${minLen} characters. ${hint}`);
+    process.exit(1);
+  }
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────
 const app = express();
 
+app.use(helmet());
 app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {

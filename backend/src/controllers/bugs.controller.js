@@ -3,36 +3,30 @@ import { query } from '../config/db.js';
 /** GET /api/bugs */
 export async function listBugs(req, res, next) {
   try {
-    const { run_id, severity, status, page = 1, limit = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    // page and limit are already coerced integers from validateQuery middleware
+    const { run_id, severity, status, page = 1, limit = 20 } = req.query;
+    const offset = (page - 1) * limit;
 
-    let sql = `
-      SELECT b.*
+    const baseWhere = `
       FROM bug_reports b
       JOIN test_runs r ON b.run_id = r.id
       WHERE r.user_id = $1
     `;
     const params = [req.user.id];
     let idx = 2;
+    let filters = '';
 
-    if (run_id) {
-      sql += ` AND b.run_id = $${idx++}`;
-      params.push(run_id);
-    }
-    if (severity) {
-      sql += ` AND b.severity = $${idx++}`;
-      params.push(severity);
-    }
-    if (status) {
-      sql += ` AND b.status = $${idx++}`;
-      params.push(status);
-    }
+    if (run_id)   { filters += ` AND b.run_id = $${idx++}`;   params.push(run_id); }
+    if (severity) { filters += ` AND b.severity = $${idx++}`; params.push(severity); }
+    if (status)   { filters += ` AND b.status = $${idx++}`;   params.push(status); }
 
-    sql += ` ORDER BY b.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
-    params.push(parseInt(limit), offset);
+    const countResult = await query(`SELECT COUNT(*) ${baseWhere}${filters}`, params);
+
+    const sql = `SELECT b.* ${baseWhere}${filters} ORDER BY b.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
+    params.push(limit, offset);
 
     const result = await query(sql, params);
-    res.json({ bugs: result.rows, page: parseInt(page), limit: parseInt(limit) });
+    res.json({ bugs: result.rows, total: parseInt(countResult.rows[0].count), page, limit });
   } catch (err) {
     next(err);
   }

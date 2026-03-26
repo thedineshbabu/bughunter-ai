@@ -1,13 +1,18 @@
 import { query } from '../config/db.js';
+import { decrypt, encrypt } from '../lib/crypto.js';
 
 /** GET /api/apps */
 export async function listApps(req, res, next) {
   try {
     const result = await query(
-      'SELECT id, name, url, created_at, updated_at FROM apps WHERE user_id = $1 ORDER BY created_at DESC',
+      'SELECT id, name, url, credentials, created_at, updated_at FROM apps WHERE user_id = $1 ORDER BY created_at DESC',
       [req.user.id]
     );
-    res.json({ apps: result.rows });
+    const apps = result.rows.map((app) => ({
+      ...app,
+      credentials: decrypt(app.credentials),
+    }));
+    res.json({ apps });
   } catch (err) {
     next(err);
   }
@@ -22,7 +27,7 @@ export async function createApp(req, res, next) {
       `INSERT INTO apps (user_id, name, url, credentials)
        VALUES ($1, $2, $3, $4)
        RETURNING id, name, url, created_at`,
-      [req.user.id, name, url, credentials ? JSON.stringify(credentials) : null]
+      [req.user.id, name, url, credentials ? encrypt(credentials) : null]
     );
 
     res.status(201).json({ app: result.rows[0] });
@@ -35,7 +40,7 @@ export async function createApp(req, res, next) {
 export async function getApp(req, res, next) {
   try {
     const result = await query(
-      'SELECT id, name, url, created_at, updated_at FROM apps WHERE id = $1 AND user_id = $2',
+      'SELECT id, name, url, credentials, created_at, updated_at FROM apps WHERE id = $1 AND user_id = $2',
       [req.params.id, req.user.id]
     );
 
@@ -43,7 +48,8 @@ export async function getApp(req, res, next) {
       return res.status(404).json({ error: 'App not found' });
     }
 
-    res.json({ app: result.rows[0] });
+    const app = { ...result.rows[0], credentials: decrypt(result.rows[0].credentials) };
+    res.json({ app });
   } catch (err) {
     next(err);
   }
@@ -62,7 +68,7 @@ export async function updateApp(req, res, next) {
            updated_at = NOW()
        WHERE id = $4 AND user_id = $5
        RETURNING id, name, url, updated_at`,
-      [name, url, credentials ? JSON.stringify(credentials) : null, req.params.id, req.user.id]
+      [name, url, credentials ? encrypt(credentials) : null, req.params.id, req.user.id]
     );
 
     if (result.rows.length === 0) {

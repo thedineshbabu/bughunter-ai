@@ -17,7 +17,9 @@ class AgentState(TypedDict):
     current_page: Optional[str]
 
     # Collected artifacts
-    screenshots: List[Dict[str, Any]]  # [{label, base64, url, timestamp}, ...]
+    screenshots: List[Dict[str, Any]]  # [{label, base64, url, timestamp, local_path}, ...]
+                                        # base64 is stripped from each entry after ValidatorAgent runs
+    screenshot_paths: List[str]         # local_path values retained after base64 strip
     bugs_found: List[Dict[str, Any]]   # raw bug observations
     test_steps: List[Dict[str, Any]]   # [{action, selector, value, result}, ...]
 

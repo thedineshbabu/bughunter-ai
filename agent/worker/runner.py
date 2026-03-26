@@ -1,7 +1,7 @@
 """
 BugHunter.AI - Job Runner
 Redis-backed job consumer. Polls bughunter:jobs, runs the LangGraph pipeline,
-saves results to PostgreSQL.
+saves results to PostgreSQL and notifies the backend via HTTP.
 """
 
 import json
@@ -9,6 +9,7 @@ import logging
 import os
 import time
 
+import httpx
 import redis
 
 from graph.graph import build_graph
@@ -28,6 +29,8 @@ class JobRunner:
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
         self.redis = redis.from_url(redis_url, decode_responses=True)
         self.graph = build_graph()
+        self._backend_url = os.environ.get("BACKEND_URL", "http://localhost:5000")
+        self._agent_secret = os.environ.get("AGENT_API_SECRET", "")
         logger.info(f"JobRunner connected to Redis: {redis_url}")
 
     def poll(self):
@@ -64,6 +67,7 @@ class JobRunner:
             "credentials": credentials,
             "current_page": None,
             "screenshots": [],
+            "screenshot_paths": [],
             "bugs_found": [],
             "test_steps": [],
             "current_agent": None,
@@ -85,25 +89,26 @@ class JobRunner:
                 {**initial_state, "error": str(exc), "bugs_found": [], "report": []},
             )
 
-    def _update_run_status(self, run_id: str, status: str):
-        """Update the test_run status in the DB."""
-        try:
-            import psycopg2
+    def _update_run_status(self, run_id: str, status: str, summary: dict = None, error: str = None):
+        """Notify the backend API of a run status change via HTTP PATCH."""
+        if not self._agent_secret:
+            logger.warning("AGENT_API_SECRET not set — skipping backend status update")
+            return
 
-            conn = psycopg2.connect(os.environ["DATABASE_URL"])
-            cur = conn.cursor()
-            if status == "running":
-                cur.execute(
-                    "UPDATE test_runs SET status = %s, started_at = NOW() WHERE id = %s",
-                    (status, run_id),
-                )
-            else:
-                cur.execute(
-                    "UPDATE test_runs SET status = %s WHERE id = %s",
-                    (status, run_id),
-                )
-            conn.commit()
-            cur.close()
-            conn.close()
+        payload = {"status": status}
+        if summary is not None:
+            payload["summary"] = summary
+        if error is not None:
+            payload["error"] = error
+
+        try:
+            url = f"{self._backend_url}/api/runs/{run_id}"
+            response = httpx.patch(
+                url,
+                json=payload,
+                headers={"x-agent-secret": self._agent_secret},
+                timeout=10.0,
+            )
+            response.raise_for_status()
         except Exception as exc:
-            logger.error(f"Failed to update run status: {exc}")
+            logger.error(f"Failed to update run status via API: {exc}")

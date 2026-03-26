@@ -15,13 +15,6 @@ from .nodes import (
 from .state import AgentState
 
 
-def has_bugs(state: AgentState) -> str:
-    """Conditional edge: route to reporter if bugs found, else to security."""
-    if state.get("bugs_found"):
-        return "reporter"
-    return "security"
-
-
 def build_graph():
     """Build and compile the BugHunter.AI LangGraph pipeline."""
     graph = StateGraph(AgentState)
@@ -37,19 +30,10 @@ def build_graph():
     graph.set_entry_point("orchestrator")
 
     # ── Define edges ─────────────────────────────────────────────────────────
+    # Security always runs after validation — never skipped, regardless of bugs found
     graph.add_edge("orchestrator", "explorer")
     graph.add_edge("explorer", "validator")
-
-    # Conditional: if bugs found go straight to reporter, else do security first
-    graph.add_conditional_edges(
-        "validator",
-        has_bugs,
-        {
-            "reporter": "reporter",
-            "security": "security",
-        },
-    )
-
+    graph.add_edge("validator", "security")
     graph.add_edge("security", "reporter")
     graph.add_edge("reporter", END)
 

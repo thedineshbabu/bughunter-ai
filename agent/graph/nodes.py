@@ -29,12 +29,26 @@ def explorer_node(state: AgentState) -> AgentState:
 
 
 def validator_node(state: AgentState) -> AgentState:
-    """Reviews screenshots and steps to identify functional bugs."""
+    """Reviews screenshots and steps to identify functional bugs.
+
+    After validation, strips the base64 image data from each screenshot entry
+    to prevent MB of image data being carried through security and reporter nodes.
+    The local_path reference is retained in screenshot_paths for S3 upload.
+    """
     from agents.validator import ValidatorAgent
 
     logger.info(f"[validator] Reviewing {len(state.get('screenshots', []))} screenshots")
     agent = ValidatorAgent()
-    return agent.run(state)
+    result = agent.run(state)
+
+    # Strip base64 payloads; downstream agents don't need raw image data
+    stripped = [
+        {k: v for k, v in s.items() if k != "base64"}
+        for s in result.get("screenshots", [])
+    ]
+    paths = [s.get("local_path", "") for s in stripped if s.get("local_path")]
+
+    return {**result, "screenshots": stripped, "screenshot_paths": paths}
 
 
 def security_node(state: AgentState) -> AgentState:

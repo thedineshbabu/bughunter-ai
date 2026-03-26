@@ -21,17 +21,28 @@ class OrchestratorAgent:
 
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
+        credentials = state.get("credentials")
         logger.info(f"Planning test strategy for: {url}")
+
+        # Summarise auth context so the plan reflects what's actually available
+        if isinstance(credentials, dict) and credentials.get("login_flow"):
+            n_steps = len(credentials["login_flow"])
+            auth_context = f"Multi-step SSO login flow provided ({n_steps} steps)."
+        elif isinstance(credentials, dict) and credentials.get("username"):
+            auth_context = "Simple username/password credentials provided."
+        else:
+            auth_context = "No credentials provided — test as an anonymous user."
 
         prompt = f"""You are a senior QA engineer. Analyze this web application URL and create a testing strategy.
 
 URL: {url}
+Auth context: {auth_context}
 
 Provide:
 1. Key pages/flows to test (home, login, dashboard, forms, etc.)
 2. Critical user journeys
 3. Common bug-prone areas to focus on
-4. Any credentials to test (use common defaults if none provided)
+4. Notes on authentication strategy based on the auth context above
 
 Be concise and practical. Output as JSON with keys: pages, user_journeys, focus_areas, notes
 """

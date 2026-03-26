@@ -1,5 +1,5 @@
 /**
- * Zod validation middleware factory.
+ * Zod validation middleware factory for request bodies.
  * Usage: router.post('/', validate(schema), controller)
  */
 export function validate(schema) {
@@ -13,6 +13,25 @@ export function validate(schema) {
       return res.status(400).json({ error: 'Validation failed', details: errors });
     }
     req.body = result.data;
+    next();
+  };
+}
+
+/**
+ * Zod validation middleware factory for query string parameters.
+ * Usage: router.get('/', validateQuery(schema), controller)
+ */
+export function validateQuery(schema) {
+  return (req, res, next) => {
+    const result = schema.safeParse(req.query);
+    if (!result.success) {
+      const errors = result.error.errors.map((e) => ({
+        field: e.path.join('.'),
+        message: e.message,
+      }));
+      return res.status(400).json({ error: 'Validation failed', details: errors });
+    }
+    req.query = result.data;
     next();
   };
 }

@@ -1,5 +1,11 @@
 import { createClient } from 'redis';
-import { logger } from '../index.js';
+import { createLogger, format, transports } from 'winston';
+
+const logger = createLogger({
+  level: 'info',
+  format: format.combine(format.timestamp(), format.printf(({ timestamp, level, message }) => `${timestamp} [${level}]: ${message}`)),
+  transports: [new transports.Console()],
+});
 
 const client = createClient({
   url: process.env.REDIS_URL || 'redis://localhost:6379',

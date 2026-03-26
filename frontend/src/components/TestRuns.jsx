@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import api from '../services/api.js';
@@ -11,21 +11,52 @@ const STATUS_STYLE = {
   failed:    { background: '#fee2e2', color: '#991b1b' },
 };
 
+const ACTIVE_STATUSES = new Set(['pending', 'running']);
+
 export default function TestRuns() {
   const [runs, setRuns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const pollRef = useRef(null);
 
-  const fetchRuns = () => {
-    api.get('/runs').then(res => setRuns(res.data.runs || [])).finally(() => setLoading(false));
-  };
+  const fetchRuns = useCallback(() => {
+    api.get('/runs')
+      .then(res => {
+        const data = res.data.runs || [];
+        setRuns(data);
+        setError(null);
+      })
+      .catch(err => setError(err.response?.data?.error || err.message || 'Failed to load runs'))
+      .finally(() => setLoading(false));
+  }, []);
 
-  useEffect(fetchRuns, []);
+  // Auto-poll every 5s while any run is pending/running
+  useEffect(() => {
+    fetchRuns();
+  }, [fetchRuns]);
+
+  useEffect(() => {
+    const hasActive = runs.some(r => ACTIVE_STATUSES.has(r.status));
+    if (hasActive && !pollRef.current) {
+      pollRef.current = setInterval(fetchRuns, 5000);
+    } else if (!hasActive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [runs, fetchRuns]);
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this test run?')) return;
-    await api.delete(`/runs/${id}`);
-    fetchRuns();
+    try {
+      await api.delete(`/runs/${id}`);
+      fetchRuns();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to delete run');
+    }
   };
 
   return (
@@ -36,6 +67,13 @@ export default function TestRuns() {
           ▶ New Run
         </button>
       </div>
+
+      {error && (
+        <div style={{ background: '#fee2e2', color: '#dc2626', padding: '0.75rem 1rem', borderRadius: '8px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{error}</span>
+          <button onClick={() => { setError(null); fetchRuns(); }} style={{ background: 'none', border: 'none', color: '#dc2626', fontWeight: 600, cursor: 'pointer' }}>Retry</button>
+        </div>
+      )}
 
       {loading ? <div>Loading...</div> : (
         <div style={{ background: '#fff', borderRadius: '12px', boxShadow: '0 1px 4px rgba(0,0,0,0.07)', overflow: 'hidden' }}>

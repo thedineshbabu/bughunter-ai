@@ -1,7 +1,9 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { formatDistanceToNow } from 'date-fns';
 import api from '../services/api.js';
+
+const ACTIVE_STATUSES = new Set(['pending', 'running']);
 
 const SEVERITY_STYLE = {
   critical: { background: '#fee2e2', color: '#991b1b', border: '1px solid #fca5a5' },
@@ -78,19 +80,43 @@ export default function BugReports() {
   const [bugs, setBugs] = useState([]);
   const [filter, setFilter] = useState('all');
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const pollRef = useRef(null);
 
-  const fetchData = () => {
-    api.get(`/runs/${id}`).then(res => {
-      setRun(res.data.run);
-      setBugs(res.data.bugs || []);
-    }).finally(() => setLoading(false));
-  };
+  const fetchData = useCallback(() => {
+    api.get(`/runs/${id}`)
+      .then(res => {
+        setRun(res.data.run);
+        setBugs(res.data.bugs || []);
+        setError(null);
+      })
+      .catch(err => setError(err.response?.data?.error || err.message || 'Failed to load run'))
+      .finally(() => setLoading(false));
+  }, [id]);
 
-  useEffect(fetchData, [id]);
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  // Auto-poll every 5s while run is pending/running
+  useEffect(() => {
+    const isActive = run && ACTIVE_STATUSES.has(run.status);
+    if (isActive && !pollRef.current) {
+      pollRef.current = setInterval(fetchData, 5000);
+    } else if (!isActive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
+  }, [run, fetchData]);
 
   const handleStatusChange = async (bugId, status) => {
-    await api.put(`/bugs/${bugId}/status`, { status });
-    fetchData();
+    try {
+      await api.put(`/bugs/${bugId}/status`, { status });
+      fetchData();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to update status');
+    }
   };
 
   const filtered = filter === 'all' ? bugs : bugs.filter(b => b.severity === filter);
@@ -103,6 +129,13 @@ export default function BugReports() {
         <h1 style={{ fontSize: '1.5rem', fontWeight: 700 }}>Bug Reports</h1>
         {run && <p style={{ color: '#6b7280', marginTop: '0.25rem' }}>Run for <strong>{run.app_name}</strong> · {run.status} · {bugs.length} bugs found</p>}
       </div>
+
+      {error && (
+        <div style={{ background: '#fee2e2', color: '#dc2626', padding: '0.75rem 1rem', borderRadius: '8px', marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>{error}</span>
+          <button onClick={() => { setError(null); fetchData(); }} style={{ background: 'none', border: 'none', color: '#dc2626', fontWeight: 600, cursor: 'pointer' }}>Retry</button>
+        </div>
+      )}
 
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.5rem' }}>
         {['all', 'critical', 'high', 'medium', 'low'].map(f => (
