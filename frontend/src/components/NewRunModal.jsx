@@ -2,6 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../services/api.js';
 
+const inputStyle = {
+  width: '100%', padding: '10px 12px',
+  background: 'var(--surface-container-lowest)',
+  border: '1px solid rgba(197,198,207,0.3)',
+  borderRadius: '8px', fontSize: '0.875rem',
+  color: 'var(--on-surface)', boxSizing: 'border-box',
+};
+
 export default function NewRunModal({ onClose, onCreated }) {
   const [apps, setApps] = useState([]);
   const [appId, setAppId] = useState('');
@@ -21,8 +29,7 @@ export default function NewRunModal({ onClose, onCreated }) {
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!appId) return setError('Please select an app');
-    setLoading(true);
-    setError('');
+    setLoading(true); setError('');
     try {
       const res = await api.post('/runs', { app_id: appId, notes });
       onCreated?.();
@@ -35,23 +42,34 @@ export default function NewRunModal({ onClose, onCreated }) {
   };
 
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-      <div style={{ background: '#fff', borderRadius: '12px', padding: '2rem', width: '100%', maxWidth: '440px' }}>
-        <h2 style={{ marginBottom: '0.5rem' }}>▶ Start New Test Run</h2>
-        <p style={{ color: '#6b7280', fontSize: '0.9rem', marginBottom: '1.5rem' }}>
-          The AI agent will autonomously explore and test your app.
-        </p>
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(25,28,30,0.3)', backdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50, padding: '1rem' }}>
+      <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '14px', padding: '2rem', width: '100%', maxWidth: '480px', boxShadow: '0 8px 40px rgba(25,28,30,0.12)' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1.5rem' }}>
+          <div>
+            <h2 style={{ fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--primary)', marginBottom: '4px' }}>Start New Test Run</h2>
+            <p style={{ fontSize: '0.875rem', color: 'var(--on-surface-variant)' }}>The AI agent will autonomously explore and test your app.</p>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--outline)', padding: '2px' }}>
+            <span className="material-symbols-outlined">close</span>
+          </button>
+        </div>
 
-        {error && <div style={{ background: '#fee2e2', color: '#dc2626', padding: '0.75rem', borderRadius: '6px', marginBottom: '1rem' }}>{error}</div>}
+        {error && (
+          <div style={{ background: 'var(--error-container)', color: 'var(--error)', padding: '10px 14px', borderRadius: '8px', marginBottom: '1rem', fontSize: '0.875rem' }}>{error}</div>
+        )}
 
-        <form onSubmit={handleSubmit}>
-          <div style={{ marginBottom: '1rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.35rem', fontWeight: 500, fontSize: '0.9rem' }}>Select App</label>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* App selector */}
+          <div>
+            <label style={{ display: 'block', marginBottom: '6px', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--on-surface-variant)' }}>Select Application</label>
             {apps.length === 0 ? (
-              <p style={{ color: '#6b7280', fontSize: '0.875rem' }}>No apps registered. <a href="/apps" style={{ color: '#4f46e5' }}>Add one first →</a></p>
+              <p style={{ fontSize: '0.875rem', color: 'var(--on-surface-variant)', padding: '10px', background: 'var(--surface-container-low)', borderRadius: '8px' }}>
+                No apps registered.{' '}
+                <a href="/apps" style={{ color: 'var(--secondary)', fontWeight: 500 }}>Add one first →</a>
+              </p>
             ) : (
-              <select value={appId} onChange={e => setAppId(e.target.value)}
-                style={{ width: '100%', padding: '0.65rem', border: '1px solid #d1d5db', borderRadius: '6px', fontSize: '0.9rem', background: '#fff' }}>
+              <select value={appId} onChange={e => setAppId(e.target.value)} className="ent-input" style={{ ...inputStyle, paddingRight: '36px' }}>
                 {apps.map(app => (
                   <option key={app.id} value={app.id}>{app.name} — {app.url}</option>
                 ))}
@@ -59,18 +77,22 @@ export default function NewRunModal({ onClose, onCreated }) {
             )}
           </div>
 
-          <div style={{ marginBottom: '1.5rem' }}>
-            <label style={{ display: 'block', marginBottom: '0.35rem', fontWeight: 500, fontSize: '0.9rem' }}>Notes (optional)</label>
+          {/* Notes */}
+          <div>
+            <label style={{ display: 'block', marginBottom: '6px', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--on-surface-variant)' }}>Notes <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>(optional)</span></label>
             <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3}
-              placeholder="e.g. Focus on checkout flow..."
-              style={{ width: '100%', padding: '0.65rem', border: '1px solid #d1d5db', borderRadius: '6px', resize: 'vertical', fontSize: '0.9rem' }} />
+              placeholder="e.g. Focus on checkout flow, test with slow network..."
+              className="ent-input" style={{ ...inputStyle, resize: 'vertical' }} />
           </div>
 
-          <div style={{ display: 'flex', gap: '0.75rem' }}>
-            <button type="button" onClick={onClose} style={{ flex: 1, padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '6px', background: '#fff' }}>Cancel</button>
-            <button type="submit" disabled={loading || apps.length === 0}
-              style={{ flex: 1, padding: '0.75rem', background: '#4f46e5', color: '#fff', border: 'none', borderRadius: '6px', fontWeight: 600 }}>
-              {loading ? 'Starting...' : '▶ Start Run'}
+          {/* Actions */}
+          <div style={{ display: 'flex', gap: '10px', paddingTop: '4px' }}>
+            <button type="button" onClick={onClose} style={{ flex: 1, padding: '12px', border: '1px solid var(--outline-variant)', borderRadius: '8px', background: 'transparent', color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 500 }}>
+              Cancel
+            </button>
+            <button type="submit" disabled={loading || apps.length === 0} style={{ flex: 2, padding: '12px', background: 'linear-gradient(135deg, var(--primary), var(--primary-container))', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: loading || apps.length === 0 ? 0.7 : 1 }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>play_arrow</span>
+              {loading ? 'Starting...' : 'Start Test Run'}
             </button>
           </div>
         </form>
