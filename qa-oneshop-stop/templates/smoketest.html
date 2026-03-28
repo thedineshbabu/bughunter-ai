@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA OneShop Stop — Execute Smoke Test</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div>
+    <h1>QA OneShop Stop</h1>
+    <span class="subtitle">Smoke Test Executor &mdash; Crawl, Generate &amp; Execute</span>
+  </div>
+  <div>
+    <span id="status-badge" class="status-badge"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <a href="/" class="back-to-hub">&larr; Back to QA Hub</a>
+
+  <!-- ═══════════════════════════════════════════════════
+       Input Panel
+       ═══════════════════════════════════════════════════ -->
+  <div class="panel active">
+    <h2>Execute Smoke Test</h2>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px;">
+      Enter a target URL. Playwright will crawl the application to understand its structure,
+      auto-generate smoke test scenarios, execute them, and produce an HTML report.
+    </p>
+
+    <label for="smoke-url">Target URL</label>
+    <input type="url" id="smoke-url" placeholder="https://example.com" />
+
+    <!-- Credential Toggle -->
+    <div class="credential-section">
+      <label class="toggle-label">
+        <input type="checkbox" id="cred-toggle" />
+        <span class="toggle-slider"></span>
+        <span class="toggle-text">Add Login Credentials</span>
+      </label>
+
+      <div id="cred-fields" class="cred-fields" style="display:none;">
+        <div class="cred-row">
+          <div class="cred-field">
+            <label for="cred-user">User ID / Email</label>
+            <input type="text" id="cred-user" placeholder="user@example.com" />
+          </div>
+          <div class="cred-field">
+            <label for="cred-password">Password</label>
+            <input type="password" id="cred-password" placeholder="Enter password" />
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <label for="smoke-jira-key">Jira Issue Key (optional — for context)</label>
+    <input type="text" id="smoke-jira-key" placeholder="PROJ-1234" />
+
+    <div class="btn-group" id="jira-preview-btn-group" style="margin-bottom: 16px; display: none;">
+      <button class="btn-generate btn-preview" onclick="fetchJiraPreview()">
+        &#128270; View Jira Description
+      </button>
+    </div>
+
+    <div id="jira-preview" class="jira-preview" style="display:none;">
+      <div class="jira-preview-header">
+        <div class="jira-preview-title">
+          <span id="jira-preview-key" class="jira-preview-badge"></span>
+          <span id="jira-preview-summary"></span>
+        </div>
+        <button class="jira-preview-close" onclick="closeJiraPreview()" title="Close preview">&times;</button>
+      </div>
+      <div class="jira-preview-meta">
+        <span id="jira-preview-type" class="jira-meta-tag"></span>
+        <span id="jira-preview-priority" class="jira-meta-tag"></span>
+        <span id="jira-preview-labels"></span>
+        <span id="jira-preview-components"></span>
+      </div>
+      <div class="jira-preview-body">
+        <div id="jira-preview-desc-section">
+          <h4>Description</h4>
+          <pre id="jira-preview-desc"></pre>
+        </div>
+        <div id="jira-preview-ac-section" style="display:none;">
+          <h4>Acceptance Criteria</h4>
+          <pre id="jira-preview-ac"></pre>
+        </div>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-smoke" id="btn-execute" onclick="executeSmoke()">
+        &#9889; Execute Smoke Test
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Live Log Console
+       ═══════════════════════════════════════════════════ -->
+  <div id="live-log-panel" class="live-log-panel" style="display:none;">
+    <div class="live-log-header">
+      <div class="live-log-title">
+        <span class="live-log-dot"></span>
+        <h3>Live Execution Log</h3>
+        <span id="live-log-status" class="live-log-status">Running...</span>
+      </div>
+      <div class="live-log-actions">
+        <button class="btn-log-action" onclick="toggleLogWrap()" title="Toggle word wrap">Wrap</button>
+        <button class="btn-log-action" onclick="clearLiveLog()" title="Clear log">Clear</button>
+      </div>
+    </div>
+    <div id="live-log-checks" class="live-log-checks"></div>
+    <div id="live-log-output" class="live-log-output"><div id="live-log-lines"></div></div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Crawl Discovery Panel
+       ═══════════════════════════════════════════════════ -->
+  <div id="crawl-panel" class="crawl-panel" style="display:none;">
+    <div class="crawl-header">
+      <h3>&#128270; Application Crawl Results</h3>
+    </div>
+    <div class="crawl-stats">
+      <span class="crawl-stat"><span id="crawl-pages">0</span> Pages</span>
+      <span class="crawl-stat"><span id="crawl-nav">0</span> Nav Items</span>
+      <span class="crawl-stat"><span id="crawl-forms">0</span> Forms</span>
+      <span class="crawl-stat"><span id="crawl-buttons">0</span> Buttons</span>
+    </div>
+    <details class="crawl-details">
+      <summary>View discovered elements</summary>
+      <div id="crawl-detail-content" class="crawl-detail-content"></div>
+    </details>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Generated Scenarios Panel
+       ═══════════════════════════════════════════════════ -->
+  <div id="scenarios-panel" class="scenarios-panel" style="display:none;">
+    <div class="scenarios-header">
+      <h3>&#9889; Generated Scenarios</h3>
+      <span id="scenarios-count" class="scenario-count-badge">0</span>
+    </div>
+    <div id="scenarios-list" class="scenarios-list"></div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Results Section
+       ═══════════════════════════════════════════════════ -->
+  <div id="smoke-results" class="smoke-results" style="display:none;">
+
+    <!-- Summary Bar -->
+    <div class="smoke-summary">
+      <div class="smoke-summary-title">
+        <h2>Smoke Test Results</h2>
+        <span id="smoke-url-display" class="smoke-url-tag"></span>
+      </div>
+      <div class="smoke-summary-stats">
+        <span class="smoke-stat smoke-stat--pass"><span id="stat-passed">0</span> Passed</span>
+        <span class="smoke-stat smoke-stat--fail"><span id="stat-failed">0</span> Failed</span>
+        <span class="smoke-stat smoke-stat--warn"><span id="stat-warnings">0</span> Warnings</span>
+        <span class="smoke-stat smoke-stat--time">&#9201; <span id="stat-duration">0</span>ms</span>
+      </div>
+
+      <!-- Report Download -->
+      <div id="report-actions" class="report-actions" style="display:none;">
+        <a id="report-link" class="btn-report" href="#" target="_blank">
+          &#128196; View HTML Report
+        </a>
+      </div>
+    </div>
+
+    <!-- Progress Bar -->
+    <div class="results-bar-container">
+      <div id="results-bar-pass" class="results-bar results-bar--pass" style="width:0%"></div>
+      <div id="results-bar-fail" class="results-bar results-bar--fail" style="width:0%"></div>
+      <div id="results-bar-warn" class="results-bar results-bar--warn" style="width:0%"></div>
+    </div>
+
+    <!-- Check Results -->
+    <div id="smoke-checks" class="smoke-checks"></div>
+
+    <!-- Console Errors -->
+    <div id="smoke-console-section" class="smoke-detail-section" style="display:none;">
+      <h3>Console Errors</h3>
+      <ul id="smoke-console-list" class="smoke-detail-list"></ul>
+    </div>
+
+    <!-- Network Failures -->
+    <div id="smoke-network-section" class="smoke-detail-section" style="display:none;">
+      <h3>Network Failures</h3>
+      <ul id="smoke-network-list" class="smoke-detail-list"></ul>
+    </div>
+
+    <!-- Screenshot -->
+    <div id="smoke-screenshot-section" class="smoke-detail-section" style="display:none;">
+      <h3>Page Screenshot</h3>
+      <img id="smoke-screenshot" class="smoke-screenshot" alt="Page screenshot" />
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Spinner Overlay -->
+<div class="spinner-overlay">
+  <div class="spinner"></div>
+  <div class="spinner-text">Executing smoke tests with Playwright...</div>
+</div>
+
+<!-- Toast -->
+<div class="toast"></div>
+
+<script src="/static/smoketest.js"></script>
+</body>
+</html>

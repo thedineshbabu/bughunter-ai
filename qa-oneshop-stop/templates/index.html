@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA OneShop Stop — Autonomous BDD Test Generator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div>
+    <h1>QA OneShop Stop</h1>
+    <span class="subtitle">Autonomous BDD Test Case Generator</span>
+  </div>
+  <div>
+    <span id="status-badge" class="status-badge"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <a href="/" class="back-to-hub">&larr; Back to QA Hub</a>
+
+  <!-- Source Tabs -->
+  <div class="source-tabs">
+    <button class="tab-btn active" data-source="user_story">
+      <span class="icon">&#9997;</span> User Story
+    </button>
+    <button class="tab-btn" data-source="jira">
+      <span class="icon">&#128196;</span> Jira Issue
+    </button>
+    <button class="tab-btn" data-source="jira_jql">
+      <span class="icon">&#128269;</span> Jira JQL
+    </button>
+    <button class="tab-btn" data-source="confluence">
+      <span class="icon">&#128214;</span> Confluence
+    </button>
+    <button class="tab-btn" data-source="figma">
+      <span class="icon">&#127912;</span> Figma
+    </button>
+    <button class="tab-btn" data-source="multi">
+      <span class="icon">&#128279;</span> Multi-Source
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: User Story
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-user_story" class="panel active">
+    <h2>Generate from User Story</h2>
+    <label for="story-text">Paste your user story, acceptance criteria, or requirement text</label>
+    <textarea id="story-text" placeholder="As a [role], I want [feature], so that [benefit]...&#10;&#10;Acceptance Criteria:&#10;- Given ... When ... Then ...&#10;- Users should be able to ..."></textarea>
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-user-story">Extra instructions for the generator</label>
+        <textarea id="extra-user-story" class="extra-instructions" placeholder="e.g. Focus on edge cases, include accessibility scenarios, use Scenario Outline for data-driven tests..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('user_story', 'test_scenario')">
+        &#128203; Generate Test Scenario File
+      </button>
+      <button class="btn-generate" onclick="generateContent('user_story', 'feature')">
+        &#9889; Generate Feature File
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: Jira Issue
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-jira" class="panel">
+    <h2>Generate from Jira Issue</h2>
+    <label for="jira-key">Jira Issue Key (e.g. PROJ-1234)</label>
+    <input type="text" id="jira-key" placeholder="PROJ-1234" />
+
+    <div class="btn-group" style="margin-bottom: 16px;">
+      <button class="btn-generate btn-preview" onclick="fetchJiraPreview()">
+        &#128270; View Jira Description
+      </button>
+    </div>
+
+    <div id="jira-preview" class="jira-preview" style="display:none;">
+      <div class="jira-preview-header">
+        <div class="jira-preview-title">
+          <span id="jira-preview-key" class="jira-preview-badge"></span>
+          <span id="jira-preview-summary"></span>
+        </div>
+        <button class="jira-preview-close" onclick="closeJiraPreview()" title="Close preview">&times;</button>
+      </div>
+      <div class="jira-preview-meta">
+        <span id="jira-preview-type" class="jira-meta-tag"></span>
+        <span id="jira-preview-priority" class="jira-meta-tag"></span>
+        <span id="jira-preview-labels"></span>
+        <span id="jira-preview-components"></span>
+      </div>
+      <div class="jira-preview-body">
+        <div id="jira-preview-desc-section">
+          <h4>Description</h4>
+          <pre id="jira-preview-desc"></pre>
+        </div>
+        <div id="jira-preview-ac-section" style="display:none;">
+          <h4>Acceptance Criteria</h4>
+          <pre id="jira-preview-ac"></pre>
+        </div>
+        <div id="jira-preview-subtasks-section" style="display:none;">
+          <h4>Sub-tasks</h4>
+          <ul id="jira-preview-subtasks"></ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-jira">Extra instructions</label>
+        <textarea id="extra-jira" class="extra-instructions" placeholder="e.g. Include API validation scenarios..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('jira', 'test_scenario')">
+        &#128203; Generate Test Scenario File
+      </button>
+      <button class="btn-generate" onclick="generateContent('jira', 'feature')">
+        &#9889; Generate Feature File
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: Jira JQL
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-jira_jql" class="panel">
+    <h2>Generate from Jira JQL Query</h2>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 16px;">
+      Run a JQL query and generate a feature file for each matching issue.
+    </p>
+    <label for="jira-jql">JQL Query</label>
+    <input type="text" id="jira-jql" placeholder='project = MYPROJ AND issuetype = Story AND sprint in openSprints()' />
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-jira-jql">Extra instructions</label>
+        <textarea id="extra-jira-jql" class="extra-instructions" placeholder="e.g. Tag each scenario with the Jira key..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('jira_jql', 'test_scenario')">
+        &#128203; Generate Test Scenario Files
+      </button>
+      <button class="btn-generate" onclick="generateContent('jira_jql', 'feature')">
+        &#9889; Generate Feature Files
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: Confluence
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-confluence" class="panel">
+    <h2>Generate from Confluence Page</h2>
+    <label for="confluence-url">Confluence Page URL or Page ID</label>
+    <input type="url" id="confluence-url" placeholder="https://your-org.atlassian.net/wiki/spaces/PROJ/pages/123456789" />
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-confluence">Extra instructions</label>
+        <textarea id="extra-confluence" class="extra-instructions" placeholder="e.g. Focus on the requirements table in the page..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('confluence', 'test_scenario')">
+        &#128203; Generate Test Scenario File
+      </button>
+      <button class="btn-generate" onclick="generateContent('confluence', 'feature')">
+        &#9889; Generate Feature File
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: Figma
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-figma" class="panel">
+    <h2>Generate from Figma Design</h2>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 16px;">
+      The generator extracts UI components, text labels, and page structure from your Figma file 
+      to produce UI-focused BDD scenarios.
+    </p>
+    <label for="figma-url">Figma File URL</label>
+    <input type="url" id="figma-url" placeholder="https://www.figma.com/design/XXXXXXX/MyDesign?node-id=..." />
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-figma">Extra instructions</label>
+        <textarea id="extra-figma" class="extra-instructions" placeholder="e.g. Generate accessibility test scenarios for each component..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('figma', 'test_scenario')">
+        &#128203; Generate Test Scenario File
+      </button>
+      <button class="btn-generate" onclick="generateContent('figma', 'feature')">
+        &#9889; Generate Feature File
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Panel: Multi-Source
+       ═══════════════════════════════════════════════════ -->
+  <div id="panel-multi" class="panel">
+    <h2>Generate from Multiple Sources</h2>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 16px;">
+      Combine context from multiple sources into a single, comprehensive feature file.
+      Fill in whichever sources you have — at least one is required.
+    </p>
+
+    <label for="multi-story">User Story (optional)</label>
+    <textarea id="multi-story" style="min-height:100px" placeholder="Paste user story text..."></textarea>
+
+    <label for="multi-jira">Jira Issue Key (optional)</label>
+    <input type="text" id="multi-jira" placeholder="PROJ-1234" />
+
+    <label for="multi-confluence">Confluence Page URL (optional)</label>
+    <input type="url" id="multi-confluence" placeholder="https://your-org.atlassian.net/wiki/..." />
+
+    <label for="multi-figma">Figma File URL (optional)</label>
+    <input type="url" id="multi-figma" placeholder="https://www.figma.com/design/..." />
+
+    <div class="extra-section">
+      <button class="extra-toggle">+ Add additional instructions</button>
+      <div class="extra-body">
+        <label for="extra-multi">Extra instructions</label>
+        <textarea id="extra-multi" class="extra-instructions" placeholder="e.g. Cross-reference the Jira AC with the Figma design..."></textarea>
+      </div>
+    </div>
+
+    <br />
+    <div class="btn-group">
+      <button class="btn-generate btn-scenario" onclick="generateContent('multi', 'test_scenario')">
+        &#128203; Generate Test Scenario File
+      </button>
+      <button class="btn-generate" onclick="generateContent('multi', 'feature')">
+        &#9889; Generate Feature File
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       Output Section
+       ═══════════════════════════════════════════════════ -->
+  <div class="output-section">
+    <div class="output-header">
+      <h2 id="output-title">Generated Feature File</h2>
+      <div class="output-actions">
+        <button class="btn-copy" onclick="copyOutput()">Copy</button>
+        <button class="btn-download" id="btn-download" onclick="downloadOutput()">Download .feature</button>
+      </div>
+    </div>
+    <div class="feature-output"></div>
+
+    <!-- Editable Scenario Cards -->
+    <div id="scenario-cards-section" class="scenario-cards-section" style="display:none;">
+      <div class="scenario-cards-header">
+        <h3 id="scenario-cards-title">Parsed Test Scenarios</h3>
+        <span id="scenario-cards-count" class="scenario-cards-count"></span>
+      </div>
+      <div id="scenario-cards-list" class="scenario-cards-list"></div>
+      <div class="scenario-cards-footer">
+        <button class="btn-push-jira" id="btn-push-jira" onclick="pushToJira()">
+          &#128640; Push to Jira
+        </button>
+      </div>
+    </div>
+
+    <div id="push-jira-result" class="push-jira-result" style="display:none;"></div>
+  </div>
+
+</div>
+
+<!-- Spinner Overlay -->
+<div class="spinner-overlay">
+  <div class="spinner"></div>
+  <div class="spinner-text">Generating BDD feature file...</div>
+</div>
+
+<!-- Toast -->
+<div class="toast"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

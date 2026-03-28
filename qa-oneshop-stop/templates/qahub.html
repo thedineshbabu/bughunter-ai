@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA Hub — QA OneShop Stop</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+<header class="header">
+  <div>
+    <h1>QA OneShop Stop</h1>
+    <span class="subtitle">Your Unified Quality Assurance Hub</span>
+  </div>
+  <div>
+    <span id="status-badge" class="status-badge"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <div class="hub-hero">
+    <h2 class="hub-title">QA Hub</h2>
+    <p class="hub-description">Choose a capability to get started. Each module is powered by AI to accelerate your QA workflows.</p>
+  </div>
+
+  <div class="hub-grid">
+
+    <a href="/generator" class="hub-card">
+      <div class="hub-card-icon">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+      </div>
+      <h3 class="hub-card-title">Generate Manual Test Scenarios</h3>
+      <p class="hub-card-desc">Create comprehensive BDD/Gherkin test scenarios from user stories, Jira issues, Confluence pages, or Figma designs.</p>
+      <span class="hub-card-action">Get Started &rarr;</span>
+    </a>
+
+    <a href="/smoketest" class="hub-card">
+      <div class="hub-card-icon hub-card-icon--smoke">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+        </svg>
+      </div>
+      <h3 class="hub-card-title">Execute Smoke Test</h3>
+      <p class="hub-card-desc">Run automated smoke tests against any URL using Playwright — validates page load, links, console errors, performance, and more.</p>
+      <span class="hub-card-action">Get Started &rarr;</span>
+    </a>
+
+    <a href="/apitest" class="hub-card">
+      <div class="hub-card-icon hub-card-icon--apitest">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="16 18 22 12 16 6"/>
+          <polyline points="8 6 2 12 8 18"/>
+          <line x1="14" y1="4" x2="10" y2="20"/>
+        </svg>
+      </div>
+      <h3 class="hub-card-title">API Testing</h3>
+      <p class="hub-card-desc">Point to any repository — auto-detects test frameworks (pytest, Jest, Mocha, Newman, Maven, and more) and executes tests with live-streamed output.</p>
+      <span class="hub-card-action">Get Started &rarr;</span>
+    </a>
+
+    <div class="hub-card hub-card--coming-soon">
+      <div class="hub-card-icon">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+      </div>
+      <h3 class="hub-card-title">Generate Failure Fix</h3>
+      <p class="hub-card-desc">Diagnose test failures and generate fixes with time-tracking and compliance analysis built in.</p>
+      <span class="hub-card-badge">Coming Soon</span>
+    </div>
+
+    <div class="hub-card hub-card--coming-soon">
+      <div class="hub-card-icon">
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="20" x2="18" y2="10"/>
+          <line x1="12" y1="20" x2="12" y2="4"/>
+          <line x1="6" y1="20" x2="6" y2="14"/>
+          <line x1="2" y1="20" x2="22" y2="20"/>
+        </svg>
+      </div>
+      <h3 class="hub-card-title">Generate Reports Dashboard</h3>
+      <p class="hub-card-desc">Unified reporting dashboard with unit cluster views, report JSON generation, and test analytics.</p>
+      <span class="hub-card-badge">Coming Soon</span>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+  fetch("/api/health")
+    .then(r => r.json())
+    .then(d => {
+      const badge = document.getElementById("status-badge");
+      badge.className = "status-badge success";
+      badge.textContent = "AI: " + d.provider;
+    })
+    .catch(() => {
+      const badge = document.getElementById("status-badge");
+      badge.className = "status-badge error";
+      badge.textContent = "AI offline";
+    });
+</script>
+
+</body>
+</html>

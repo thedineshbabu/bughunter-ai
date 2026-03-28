@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>QA OneShop Stop — API Testing</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="/static/apitest.css" />
+</head>
+<body>
+
+<!-- Header -->
+<header class="header">
+  <div>
+    <h1>QA OneShop Stop</h1>
+    <span class="subtitle">API Testing &mdash; Auto-Detect &amp; Execute</span>
+  </div>
+  <div>
+    <span id="status-badge" class="status-badge"></span>
+  </div>
+</header>
+
+<div class="container">
+
+  <a href="/" class="back-to-hub">&larr; Back to QA Hub</a>
+
+  <!-- ═══════════════════════════════════════════════════
+       Mode Selector Tabs
+       ═══════════════════════════════════════════════════ -->
+  <div class="mode-tabs">
+    <button class="mode-tab mode-tab--active" data-mode="repo" onclick="switchMode('repo')">
+      Repository Test Runner
+    </button>
+    <button class="mode-tab" data-mode="collection" onclick="switchMode('collection')">
+      API Collection Testing
+    </button>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       REPO MODE — Repository Test Runner (existing)
+       ═══════════════════════════════════════════════════ -->
+  <div id="mode-repo" class="mode-panel">
+
+    <div class="panel active">
+      <h2>Repository Test Runner</h2>
+      <p class="panel-description">
+        Provide a local repository path or a Git URL. The runner will auto-detect the test framework,
+        discover test files, and execute them with live-streamed output.
+      </p>
+
+      <label for="repo-path">Repository Path or Git URL</label>
+      <input type="text" id="repo-path" placeholder="C:\Projects\my-api  or  https://github.com/org/repo.git" />
+
+      <div class="btn-group">
+        <button class="btn-generate btn-detect" id="btn-detect" onclick="detectFrameworks()">
+          &#128269; Detect Frameworks
+        </button>
+      </div>
+    </div>
+
+    <div id="detect-results" class="detect-results" style="display:none;">
+      <div class="detect-header">
+        <h3>Detected Frameworks</h3>
+        <span id="detect-repo-path" class="detect-repo-tag"></span>
+      </div>
+
+      <div id="framework-cards" class="framework-cards"></div>
+
+      <div class="detect-custom">
+        <label for="custom-command">Custom Command (optional override)</label>
+        <input type="text" id="custom-command" placeholder="e.g. pytest tests/api/ -v --tb=short" />
+      </div>
+
+      <div class="btn-group" style="margin-top: 16px;">
+        <button class="btn-generate btn-run" id="btn-run" onclick="runTests()">
+          &#9654; Run Tests
+        </button>
+      </div>
+    </div>
+
+    <div id="live-log-panel" class="live-log-panel" style="display:none;">
+      <div class="live-log-header">
+        <div class="live-log-title">
+          <span class="live-log-dot"></span>
+          <h3>Test Execution</h3>
+          <span id="live-log-status" class="live-log-status">Running...</span>
+        </div>
+        <div class="live-log-actions">
+          <button class="btn-log-action" onclick="toggleLogWrap()" title="Toggle word wrap">Wrap</button>
+          <button class="btn-log-action" onclick="clearLiveLog()" title="Clear log">Clear</button>
+        </div>
+      </div>
+      <div id="live-log-output" class="live-log-output"><div id="live-log-lines"></div></div>
+    </div>
+
+    <div id="test-results" class="test-results" style="display:none;">
+      <div class="results-summary">
+        <div class="results-summary-title">
+          <h2>Test Results</h2>
+          <span id="results-framework" class="results-fw-tag"></span>
+        </div>
+        <div class="results-stats">
+          <span class="results-stat results-stat--pass"><span id="stat-passed">0</span> Passed</span>
+          <span class="results-stat results-stat--fail"><span id="stat-failed">0</span> Failed</span>
+          <span class="results-stat results-stat--skip"><span id="stat-skipped">0</span> Skipped</span>
+          <span class="results-stat results-stat--error"><span id="stat-errors">0</span> Errors</span>
+          <span class="results-stat results-stat--time">&#9201; <span id="stat-duration">0</span>ms</span>
+          <span class="results-stat results-stat--exit">Exit: <span id="stat-exit-code">0</span></span>
+        </div>
+      </div>
+      <div class="results-bar-container">
+        <div id="results-bar-pass" class="results-bar results-bar--pass" style="width:0%"></div>
+        <div id="results-bar-fail" class="results-bar results-bar--fail" style="width:0%"></div>
+        <div id="results-bar-skip" class="results-bar results-bar--skip" style="width:0%"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════
+       COLLECTION MODE — API Collection Testing (new)
+       ═══════════════════════════════════════════════════ -->
+  <div id="mode-collection" class="mode-panel" style="display:none;">
+
+    <!-- Upload Panel -->
+    <div class="panel active">
+      <h2>API Collection Testing</h2>
+      <p class="panel-description">
+        Upload an OpenAPI / Swagger JSON specification. The AI engine will auto-generate
+        positive and negative test cases for each endpoint, execute them, and publish a dashboard.
+      </p>
+
+      <div class="upload-area" id="upload-area">
+        <div class="upload-icon">&#128196;</div>
+        <div class="upload-text">Drag &amp; drop your OpenAPI JSON file here</div>
+        <div class="upload-subtext">or click to browse</div>
+        <input type="file" id="collection-file" accept=".json" />
+        <div id="upload-filename" class="upload-filename"></div>
+      </div>
+
+      <label for="base-url" style="margin-top: 20px;">Base URL (target server)</label>
+      <input type="text" id="base-url" placeholder="https://api.example.com" />
+
+      <div class="btn-group" style="margin-top: 16px;">
+        <button class="btn-generate btn-detect" id="btn-upload" onclick="uploadCollection()">
+          &#128196; Parse Specification
+        </button>
+      </div>
+    </div>
+
+    <!-- Endpoints Preview -->
+    <div id="endpoints-preview" class="detect-results" style="display:none;">
+      <div class="detect-header">
+        <h3 id="spec-title">Endpoints</h3>
+        <span id="spec-version" class="detect-repo-tag"></span>
+        <span id="spec-count" class="detect-repo-tag"></span>
+      </div>
+
+      <div id="endpoint-cards" class="endpoint-cards"></div>
+
+      <div class="btn-group" style="margin-top: 20px;">
+        <button class="btn-generate btn-run" id="btn-generate-execute" onclick="runCollectionTests()">
+          &#9654; Generate &amp; Execute Tests
+        </button>
+      </div>
+    </div>
+
+    <!-- Live Log for Collection Testing -->
+    <div id="collection-log-panel" class="live-log-panel" style="display:none;">
+      <div class="live-log-header">
+        <div class="live-log-title">
+          <span class="live-log-dot"></span>
+          <h3>AI Test Generation &amp; Execution</h3>
+          <span id="collection-log-status" class="live-log-status">Running...</span>
+        </div>
+        <div class="live-log-actions">
+          <button class="btn-log-action" onclick="toggleCollectionLogWrap()" title="Toggle word wrap">Wrap</button>
+          <button class="btn-log-action" onclick="clearCollectionLog()" title="Clear log">Clear</button>
+        </div>
+      </div>
+      <div id="collection-log-output" class="live-log-output"><div id="collection-log-lines"></div></div>
+    </div>
+
+    <!-- Dashboard -->
+    <div id="collection-dashboard" class="collection-dashboard" style="display:none;">
+
+      <!-- Summary Cards -->
+      <div class="dashboard-summary">
+        <div class="dash-card dash-card--total">
+          <div class="dash-card-value" id="dash-total-endpoints">0</div>
+          <div class="dash-card-label">Endpoints</div>
+        </div>
+        <div class="dash-card dash-card--tests">
+          <div class="dash-card-value" id="dash-total-tests">0</div>
+          <div class="dash-card-label">Total Tests</div>
+        </div>
+        <div class="dash-card dash-card--pass">
+          <div class="dash-card-value" id="dash-passed">0</div>
+          <div class="dash-card-label">Passed</div>
+        </div>
+        <div class="dash-card dash-card--fail">
+          <div class="dash-card-value" id="dash-failed">0</div>
+          <div class="dash-card-label">Failed</div>
+        </div>
+        <div class="dash-card dash-card--rate">
+          <div class="dash-card-value" id="dash-pass-rate">0%</div>
+          <div class="dash-card-label">Pass Rate</div>
+        </div>
+        <div class="dash-card dash-card--time">
+          <div class="dash-card-value" id="dash-duration">0s</div>
+          <div class="dash-card-label">Duration</div>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="results-bar-container" style="margin-bottom: 24px;">
+        <div id="dash-bar-pass" class="results-bar results-bar--pass" style="width:0%"></div>
+        <div id="dash-bar-fail" class="results-bar results-bar--fail" style="width:0%"></div>
+      </div>
+
+      <!-- Per-Endpoint Results -->
+      <div id="endpoint-results" class="endpoint-results"></div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<!-- Spinner Overlay -->
+<div class="spinner-overlay">
+  <div class="spinner"></div>
+  <div class="spinner-text">Processing...</div>
+</div>
+
+<!-- Toast -->
+<div class="toast"></div>
+
+<script src="/static/apitest.js"></script>
+</body>
+</html>
