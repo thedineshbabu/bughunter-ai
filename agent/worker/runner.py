@@ -63,6 +63,7 @@ class JobRunner:
 
         # Build initial state
         initial_state: AgentState = {
+            "run_id": run_id,
             "url": app_url,
             "credentials": credentials,
             "current_page": None,
@@ -76,18 +77,31 @@ class JobRunner:
             "report": None,
         }
 
+        self._publish(run_id, "agent_start", {"agent": "orchestrator", "message": "Pipeline starting…"})
+
         try:
             final_state = self.graph.invoke(initial_state)
+            bug_count = len(final_state.get("bugs_found", []))
             save_run_to_db(run_id, "completed", final_state)
-            logger.info(f"Job {run_id} completed. Bugs found: {len(final_state.get('bugs_found', []))}")
+            self._publish(run_id, "run_complete", {"total_bugs": bug_count, "message": f"Run completed — {bug_count} bug(s) found"})
+            logger.info(f"Job {run_id} completed. Bugs found: {bug_count}")
 
         except Exception as exc:
             logger.error(f"Job {run_id} failed: {exc}", exc_info=True)
+            self._publish(run_id, "run_failed", {"error": str(exc), "message": f"Run failed: {exc}"})
             save_run_to_db(
                 run_id,
                 "failed",
                 {**initial_state, "error": str(exc), "bugs_found": [], "report": []},
             )
+
+    def _publish(self, run_id: str, event_type: str, data: dict):
+        """Publish a pipeline progress event to Redis Pub/Sub."""
+        try:
+            from tools.events import publish_event
+            publish_event(run_id, event_type, data)
+        except Exception as exc:
+            logger.debug(f"Event publish failed: {exc}")
 
     def _update_run_status(self, run_id: str, status: str, summary: dict = None, error: str = None):
         """Notify the backend API of a run status change via HTTP PATCH."""

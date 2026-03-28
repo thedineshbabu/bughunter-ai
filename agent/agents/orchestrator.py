@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
 from providers import get_llm
+from tools.events import publish_event
 
 logger = logging.getLogger("bughunter.orchestrator")
 
@@ -21,8 +22,10 @@ class OrchestratorAgent:
 
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
+        run_id = state.get("run_id")
         credentials = state.get("credentials")
         logger.info(f"Planning test strategy for: {url}")
+        publish_event(run_id, "agent_start", {"agent": "orchestrator", "message": f"Planning test strategy for {url}…"})
 
         # Summarise auth context so the plan reflects what's actually available
         if isinstance(credentials, dict) and credentials.get("login_flow"):
@@ -55,6 +58,7 @@ Be concise and practical. Output as JSON with keys: pages, user_journeys, focus_
             logger.error(f"OrchestratorAgent LLM call failed: {exc}")
             plan_text = f"Default strategy for {url}"
 
+        publish_event(run_id, "agent_done", {"agent": "orchestrator", "message": "Test strategy ready — starting exploration"})
         return {
             **state,
             "current_agent": "orchestrator",

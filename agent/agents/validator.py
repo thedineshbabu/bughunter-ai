@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
 from providers import get_llm
+from tools.events import publish_event
 
 logger = logging.getLogger("bughunter.validator")
 
@@ -60,8 +61,10 @@ If no bugs found, return an empty array [].
     def run(self, state: AgentState) -> AgentState:
         test_steps = state.get("test_steps", [])
         bugs_found = list(state.get("bugs_found", []))
+        run_id = state.get("run_id")
 
         logger.info(f"Validating {len(test_steps)} test steps")
+        publish_event(run_id, "agent_start", {"agent": "validator", "message": "Analyzing screenshots for bugs…"})
 
         for step in test_steps:
             if step.get("action") in ("observe", "errors_detected"):
@@ -69,8 +72,16 @@ If no bugs found, return an empty array [].
                 if new_bugs:
                     logger.info(f"Found {len(new_bugs)} bug(s) in step: {step.get('url', '?')}")
                     bugs_found.extend(new_bugs)
+                    for bug in new_bugs:
+                        publish_event(run_id, "bug_found", {
+                            "title": bug.get("title", "Bug detected"),
+                            "severity": bug.get("severity", "medium"),
+                            "page_url": bug.get("page_url", step.get("url", "")),
+                            "message": f"[{bug.get('severity','medium').upper()}] {bug.get('title','Bug detected')}",
+                        })
 
         logger.info(f"ValidatorAgent total bugs found: {len(bugs_found)}")
+        publish_event(run_id, "agent_done", {"agent": "validator", "message": f"Validation complete — {len(bugs_found)} functional bug(s)"})
 
         return {
             **state,

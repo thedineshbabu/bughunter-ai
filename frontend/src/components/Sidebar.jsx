@@ -3,9 +3,10 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 
 const NAV_ITEMS = [
-  { to: '/',     label: 'Dashboard', icon: 'dashboard' },
-  { to: '/apps', label: 'Apps',      icon: 'apps' },
-  { to: '/runs', label: 'Test Runs', icon: 'flaky' },
+  { to: '/',        label: 'Dashboard',   icon: 'dashboard' },
+  { to: '/apps',    label: 'Apps',        icon: 'apps' },
+  { to: '/runs',    label: 'Test Runs',   icon: 'flaky' },
+  { to: '/apitest', label: 'API Testing', icon: 'api' },
 ];
 
 export default function Sidebar() {

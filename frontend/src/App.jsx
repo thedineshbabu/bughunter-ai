@@ -6,6 +6,7 @@ import Dashboard from './components/Dashboard.jsx';
 import AppList from './components/AppList.jsx';
 import TestRuns from './components/TestRuns.jsx';
 import BugReports from './components/BugReports.jsx';
+import ApiTesting from './components/ApiTesting.jsx';
 
 // ── Shared input style ───────────────────────────────────────────────────────
 const inputStyle = {
@@ -197,6 +198,7 @@ export default function App() {
       <Route path="/apps"     element={<ProtectedRoute><AppList /></ProtectedRoute>} />
       <Route path="/runs"     element={<ProtectedRoute><TestRuns /></ProtectedRoute>} />
       <Route path="/runs/:id" element={<ProtectedRoute><BugReports /></ProtectedRoute>} />
+      <Route path="/apitest"  element={<ProtectedRoute><ApiTesting /></ProtectedRoute>} />
       <Route path="*"         element={<Navigate to="/" replace />} />
     </Routes>
   );

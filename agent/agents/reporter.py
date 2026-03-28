@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
 from providers import get_llm
+from tools.events import publish_event
 
 logger = logging.getLogger("bughunter.reporter")
 
@@ -67,7 +68,9 @@ Return ONLY the JSON object, no extra text.
 
     def run(self, state: AgentState) -> AgentState:
         bugs_found = state.get("bugs_found", [])
+        run_id = state.get("run_id")
         logger.info(f"Generating reports for {len(bugs_found)} bug(s)")
+        publish_event(run_id, "agent_start", {"agent": "reporter", "message": f"Writing structured reports for {len(bugs_found)} bug(s)…"})
 
         structured_reports = []
         for raw_bug in bugs_found:
@@ -78,6 +81,7 @@ Return ONLY the JSON object, no extra text.
             structured_reports.append(report)
 
         logger.info(f"Generated {len(structured_reports)} structured bug report(s)")
+        publish_event(run_id, "agent_done", {"agent": "reporter", "message": f"Reports ready — {len(structured_reports)} bug(s) documented"})
 
         return {
             **state,

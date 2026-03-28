@@ -1,6 +1,6 @@
 """
 BugHunter.AI - LLM Provider Factory
-Supports Anthropic, OpenAI, Google Gemini, Groq, Mistral, Ollama.
+Supports Anthropic, OpenAI, Google Gemini, Groq, Mistral, Ollama, Claude CLI.
 Configure via LLM_PROVIDER and LLM_MODEL env vars.
 """
 
@@ -17,6 +17,7 @@ DEFAULT_MODELS = {
     "groq":      "llama-3.3-70b-versatile",
     "mistral":   "mistral-large-latest",
     "ollama":    "llama3",
+    "claude_cli": "claude-sonnet-4-6",
 }
 
 def get_llm(provider: str = None, model: str = None, temperature: float = 0.2):
@@ -77,8 +78,13 @@ def get_llm(provider: str = None, model: str = None, temperature: float = 0.2):
             temperature=temperature,
         )
 
+    elif provider == "claude_cli":
+        from tools.claude_cli import ChatClaudeCLI
+        timeout = int(os.getenv("CLAUDE_CLI_TIMEOUT", "300"))
+        return ChatClaudeCLI(model=model, timeout=timeout)
+
     else:
         raise ValueError(
             f"Unsupported LLM_PROVIDER: '{provider}'. "
-            f"Supported: anthropic, openai, google, groq, mistral, ollama"
+            f"Supported: anthropic, openai, google, groq, mistral, ollama, claude_cli"
         )

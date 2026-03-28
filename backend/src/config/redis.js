@@ -23,3 +23,11 @@ client.on('connect', () => {
 await client.connect();
 
 export default client;
+
+/**
+ * Create a fresh Redis subscriber client for a single Pub/Sub session.
+ * Callers are responsible for connecting and cleaning up after use.
+ */
+export function createSubscriber() {
+  return createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
+}

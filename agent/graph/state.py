@@ -9,6 +9,9 @@ from typing import Any, Dict, List, Optional, TypedDict
 class AgentState(TypedDict):
     """Shared state object passed between all agents in the LangGraph pipeline."""
 
+    # Job identity — used for SSE progress publishing
+    run_id: Optional[str]
+
     # Target application
     url: str
     credentials: Optional[Dict[str, str]]  # e.g. {"username": "...", "password": "..."}

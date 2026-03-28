@@ -79,18 +79,34 @@ orchestrator ──▶ explorer ──▶ validator ──▶ [has_bugs?]
 
 ## 🧠 Supported LLM Providers
 
-BugHunter.AI supports **6 LLM providers** out of the box. Configure via `LLM_PROVIDER` and optionally `LLM_MODEL` in `agent/.env`:
+BugHunter.AI supports **7 LLM providers** out of the box. Configure via `LLM_PROVIDER` and optionally `LLM_MODEL` in `agent/.env`:
 
-| Provider    | `LLM_PROVIDER` | Default Model                  | API Key Env Var       |
-|-------------|----------------|--------------------------------|-----------------------|
-| Anthropic   | `anthropic`    | `claude-3-5-sonnet-20241022`   | `ANTHROPIC_API_KEY`   |
-| OpenAI      | `openai`       | `gpt-4o`                       | `OPENAI_API_KEY`      |
-| Google      | `google`       | `gemini-2.0-flash`             | `GOOGLE_API_KEY`      |
-| Groq        | `groq`         | `llama-3.3-70b-versatile`      | `GROQ_API_KEY`        |
-| Mistral     | `mistral`      | `mistral-large-latest`         | `MISTRAL_API_KEY`     |
-| Ollama      | `ollama`       | `llama3`                       | None (local)          |
+| Provider       | `LLM_PROVIDER` | Default Model                  | API Key Env Var       |
+|----------------|----------------|--------------------------------|-----------------------|
+| Anthropic      | `anthropic`    | `claude-3-5-sonnet-20241022`   | `ANTHROPIC_API_KEY`   |
+| OpenAI         | `openai`       | `gpt-4o`                       | `OPENAI_API_KEY`      |
+| Google         | `google`       | `gemini-2.0-flash`             | `GOOGLE_API_KEY`      |
+| Groq           | `groq`         | `llama-3.3-70b-versatile`      | `GROQ_API_KEY`        |
+| Mistral        | `mistral`      | `mistral-large-latest`         | `MISTRAL_API_KEY`     |
+| Ollama         | `ollama`       | `llama3`                       | None (local)          |
+| Claude Code CLI| `claude_cli`   | `claude-sonnet-4-6`            | None (uses CLI auth)  |
 
 > **Tip:** To override the default model, set `LLM_MODEL=your-model-name` in `agent/.env`.
+
+### Claude Code CLI Provider
+
+The `claude_cli` provider uses the [Claude Code](https://claude.ai/code) CLI subprocess instead of a direct API key. This is ideal if you have Claude Code installed and authenticated via SSO or browser — no `ANTHROPIC_API_KEY` needed.
+
+```env
+LLM_PROVIDER=claude_cli
+# LLM_MODEL=claude-opus-4-6      # optional, defaults to claude-sonnet-4-6
+# CLAUDE_CLI_TIMEOUT=300          # optional, seconds (default: 300)
+```
+
+Requires the `claude` binary to be on your `PATH`. Verify with:
+```bash
+claude --version
+```
 
 ---
 
@@ -101,7 +117,7 @@ BugHunter.AI supports **6 LLM providers** out of the box. Configure via `LLM_PRO
 - Docker & Docker Compose
 - Node.js 18+
 - Python 3.11+
-- An API key for at least one supported LLM provider
+- An API key for at least one supported LLM provider **or** [Claude Code](https://claude.ai/code) installed and authenticated (for the `claude_cli` provider)
 
 ### 1. Clone the Repo
 
@@ -157,8 +173,9 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-Create `agent/.env` with your configuration:
+Create `agent/.env` with your configuration. Choose one of the two LLM setup options:
 
+**Option A — API key (any provider):**
 ```env
 # LLM Provider (anthropic | openai | google | groq | mistral | ollama)
 LLM_PROVIDER=google
@@ -176,6 +193,18 @@ AWS_ACCESS_KEY_ID=your-aws-access-key
 AWS_SECRET_ACCESS_KEY=your-aws-secret-key
 S3_BUCKET=bughunter-screenshots
 S3_REGION=us-east-1
+```
+
+**Option B — Claude Code CLI (no API key required):**
+```env
+# Uses the installed `claude` CLI — no API key needed
+LLM_PROVIDER=claude_cli
+# LLM_MODEL=claude-sonnet-4-6     # optional
+# CLAUDE_CLI_TIMEOUT=300           # optional, seconds
+
+# Database & Redis
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/bughunter
+REDIS_URL=redis://localhost:6379
 ```
 
 Start the agent worker:
@@ -302,6 +331,8 @@ users ──────────────── apps ──────�
 | `Page.goto: Timeout exceeded` | Slow page load with `networkidle` | Already fixed — uses `domcontentloaded` strategy |
 | `No module named 'langchain_google_genai'` | Missing LLM provider package | `pip install langchain-google-genai` |
 | `models/gemini-1.5-pro is not found` | Deprecated model | Updated default to `gemini-2.0-flash` |
+| `claude CLI not found on PATH` | `claude_cli` provider selected but Claude Code not installed | Install Claude Code from https://claude.ai/code and ensure `claude` is on your PATH |
+| `claude CLI exited with code 1` | Claude Code not authenticated | Run `claude` once interactively to complete browser/SSO login |
 | Login succeeds but page doesn't redirect | Missing auth redirect in frontend | Fixed — `Login`/`Register` components now redirect on auth |
 | PowerShell `curl` doesn't work | `curl` is aliased to `Invoke-WebRequest` | Use `curl.exe` or `Invoke-RestMethod` instead |
 

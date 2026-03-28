@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage
 from graph.state import AgentState
 from providers import get_llm
 from tools.browser import BrowserTool
+from tools.events import publish_event
 from tools.screenshot import capture
 
 logger = logging.getLogger("bughunter.explorer")
@@ -119,12 +120,15 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
 
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
+        run_id = state.get("run_id")
         credentials = state.get("credentials") or {}
         screenshots = list(state.get("screenshots", []))
         test_steps = list(state.get("test_steps", []))
 
         visited_urls = []
         pages_explored = 0
+
+        publish_event(run_id, "agent_start", {"agent": "explorer", "message": "Browser exploration starting…"})
 
         # Log credentials shape for debugging
         if credentials:
@@ -155,6 +159,8 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
                 # Capture screenshot
                 shot = capture(self.browser.page, label=f"page_{pages_explored}")
                 screenshots.append(shot)
+
+                publish_event(run_id, "page_visited", {"url": current_url, "page": pages_explored, "title": page_title, "message": f"Exploring: {current_url}"})
 
                 # Ask the LLM what to test
                 actions_json = self._ask_what_to_test(page_title, current_url, source)
@@ -284,6 +290,7 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
             except Exception:
                 pass
 
+        publish_event(run_id, "agent_done", {"agent": "explorer", "message": f"Exploration complete — {pages_explored} page(s) visited"})
         return {
             **state,
             "current_agent": "explorer",

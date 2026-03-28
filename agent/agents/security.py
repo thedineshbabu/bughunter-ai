@@ -9,6 +9,7 @@ import re
 
 from graph.state import AgentState
 from tools.browser import BrowserTool
+from tools.events import publish_event
 
 logger = logging.getLogger("bughunter.security")
 
@@ -152,9 +153,11 @@ class SecurityAgent:
 
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
+        run_id = state.get("run_id")
         bugs_found = list(state.get("bugs_found", []))
 
         logger.info(f"Running security tests on: {url}")
+        publish_event(run_id, "agent_start", {"agent": "security", "message": "Running security tests (XSS, SQLi, secrets)…"})
 
         xss_bugs = self._test_xss(url)
         sqli_bugs = self._test_sqli(url)
@@ -163,8 +166,16 @@ class SecurityAgent:
         new_bugs = xss_bugs + sqli_bugs + secret_bugs
         if new_bugs:
             logger.info(f"SecurityAgent found {len(new_bugs)} security issue(s)")
+            for bug in new_bugs:
+                publish_event(run_id, "bug_found", {
+                    "title": bug.get("title", "Security issue"),
+                    "severity": "critical",
+                    "page_url": url,
+                    "message": f"[CRITICAL] {bug.get('title', 'Security issue')}",
+                })
 
         bugs_found.extend(new_bugs)
+        publish_event(run_id, "agent_done", {"agent": "security", "message": f"Security scan complete — {len(new_bugs)} issue(s)"})
 
         return {
             **state,

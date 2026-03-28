@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes.js';
 import appsRoutes from './routes/apps.routes.js';
 import runsRoutes from './routes/runs.routes.js';
 import bugsRoutes from './routes/bugs.routes.js';
+import apitestRoutes from './routes/apitest.routes.js';
 
 // ── Logger ──────────────────────────────────────────────────────────────────
 export const logger = createLogger({
@@ -42,8 +43,8 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'http://localhost:5173',
   credentials: true,
 }));
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
@@ -55,6 +56,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/apps', appsRoutes);
 app.use('/api/runs', runsRoutes);
 app.use('/api/bugs', bugsRoutes);
+app.use('/api/apitest', apitestRoutes);
 
 // ── 404 ────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
