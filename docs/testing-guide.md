@@ -1,6 +1,6 @@
 # BugHunter.AI — Testing Guide
 
-This guide walks through adding a sample test site to BugHunter.AI and running an AI-powered bug scan against it. The two sample sites included in the Docker Compose setup are used as examples.
+This guide walks through adding an application to BugHunter.AI and running an AI-powered bug scan against it.
 
 ---
 
@@ -12,6 +12,8 @@ This guide walks through adding a sample test site to BugHunter.AI and running a
 | **DVWA** | http://localhost:8080 | admin / password | Classic PHP app with configurable vulnerability levels |
 
 Both start automatically when you run `./start.sh` (Linux/macOS) or `./start.ps1` (Windows).
+
+All three sample apps — including any app configured in `backend/.env` (e.g. Korn Ferry) — are **auto-registered** on startup. No manual registration needed.
 
 ---
 
@@ -42,8 +44,8 @@ Navigate to **Application Inventory** in the left sidebar and click **Add Applic
 |-------|-------|
 | **Application Name** | `OWASP Juice Shop` |
 | **URL** | `http://localhost:3000` |
-| **Authentication** | Simple Login |
-| **Username / Email** | `admin@juice-sh.op` |
+| **Authentication** | Smart Login (Auto) |
+| **Email** | `admin@juice-sh.op` |
 | **Password** | `admin123` |
 
 Click **Save Application**.
@@ -52,14 +54,12 @@ Click **Save Application**.
 
 ### Adding DVWA
 
-DVWA uses a standard HTML login form. Use **Simple Login**:
-
 | Field | Value |
 |-------|-------|
 | **Application Name** | `DVWA` |
 | **URL** | `http://localhost:8080/login.php` |
-| **Authentication** | Simple Login |
-| **Username / Email** | `admin` |
+| **Authentication** | Smart Login (Auto) |
+| **Email** | `admin` |
 | **Password** | `password` |
 
 Click **Save Application**.
@@ -68,26 +68,61 @@ Click **Save Application**.
 
 ---
 
-### Authentication Modes Explained
+### Adding an Enterprise App (e.g. Korn Ferry Talent)
 
-BugHunter.AI supports three authentication modes when registering an app:
+For apps with SSO or email-first login, use **Smart Login (Auto)** — just provide the email and password. The agent figures out the flow automatically.
+
+| Field | Value |
+|-------|-------|
+| **Application Name** | `Korn Ferry Talent (SSO)` |
+| **URL** | `https://home.kornferrytalent-dev.com/login` |
+| **Authentication** | Smart Login (Auto) |
+| **Email** | `user@company.com` |
+| **Password** | Your IDP password |
+
+The agent will handle: email-first page → SSO redirect to Microsoft/Okta IDP → password entry → redirect back to the app.
+
+For **non-SSO users** on the same app, register a second entry with the non-SSO user's email and app password — the agent adapts automatically based on what it sees.
+
+To auto-register an enterprise app on every `./start.sh`, add to `backend/.env`:
+```env
+KF_EMAIL=user@company.com
+KF_IDP_PASSWORD=your-password
+```
+
+---
+
+### Authentication Modes Explained
 
 | Mode | When to use |
 |------|-------------|
 | **None** | Public sites that require no login |
-| **Simple Login** | Standard username + password forms — the agent fills them automatically |
-| **SSO / Multi-Step** | Complex flows (MFA, SSO redirects, token entry) — you define each Playwright step manually |
+| **Smart Login (Auto)** | Any login flow — the agent uses the LLM to navigate automatically. Handles standard forms, email-first pages, SSO/IDP redirects (Microsoft, Okta, Google), and more |
+| **SSO / Multi-Step** | Manual override — you define each Playwright step explicitly. Use this only if Smart Login fails (e.g. login inside an iframe) |
 
-#### SSO / Multi-Step Flow Example (Juice Shop)
+#### How Smart Login Works
 
-If Simple Login doesn't work for your target, switch to **SSO / Multi-Step** and define the steps manually:
+When given just an email and password, the agent runs an iterative loop (up to 12 steps):
+
+1. Reads the current page HTML
+2. Asks the LLM: *"What is the single next action to log in?"*
+3. Executes the action (fill, click, wait for redirect, etc.)
+4. Repeats until the URL leaves all login/auth pages or the LLM signals done
+
+The real password is **never sent to the LLM** — a placeholder `__PASSWORD__` is used in prompts and substituted locally before browser execution.
+
+#### SSO / Multi-Step (Manual Override)
+
+If Smart Login fails, switch to **SSO / Multi-Step** and define each step explicitly:
 
 | Step | Action | Selector | Value |
 |------|--------|----------|-------|
-| 1 | Fill input | `input[type="email"]` | `admin@juice-sh.op` |
-| 2 | Fill input | `input[type="password"]` | `admin123` |
-| 3 | Click element | `button[type="submit"]` | — |
-| 4 | Wait for redirect | — | timeout: 5000 |
+| 1 | Fill input | `input[type="email"]` | `user@example.com` |
+| 2 | Click element | `button[type="submit"]` | — |
+| 3 | Wait for redirect | — | timeout: 15000 |
+| 4 | Fill input | `input[type="password"]` | `password` |
+| 5 | Click element | `button[type="submit"]` | — |
+| 6 | Wait for redirect | — | timeout: 20000 |
 
 ---
 
@@ -95,14 +130,21 @@ If Simple Login doesn't work for your target, switch to **SSO / Multi-Step** and
 
 1. Click **Test Runs** in the left sidebar
 2. Click **New Run** (or the **Start New Test Run** button)
-3. Select the application from the dropdown — e.g. `OWASP Juice Shop — http://localhost:3000`
-4. Optionally add notes to guide the agent, for example:
-   - `Focus on the shopping cart and checkout flow`
-   - `Test XSS in the search bar and product reviews`
-   - `Check for authentication bypass on admin routes`
+3. Select the application from the dropdown
+4. Configure the test (all fields optional):
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| **What to test** | Specific instructions for the agent | `Test the client listing page — search, filters, and pagination` |
+| **Focus areas** | Areas to prioritize | `authentication, forms, navigation` |
+| **Pages to explore** | Slider 1–20 (default 5) | `10` for deeper coverage |
+| **Notes** | Run-level notes for your records | `Post-deployment smoke test` |
+
 5. Click **Start Test Run**
 
 You are redirected to the Bug Reports page for that run where you can watch results appear in real time.
+
+> **Tip:** More pages = deeper coverage but longer run time. For a quick smoke test use 3–5 pages; for thorough coverage use 10–15.
 
 ---
 
@@ -181,9 +223,9 @@ tail -f logs/agent.log
 Ensure the Python worker started successfully — look for `Job runner started` in the log.
 
 ### Agent cannot log in to the site
-- Verify the site is accessible at its URL in your browser
-- Try switching to **SSO / Multi-Step** auth and define each login step explicitly with exact CSS selectors
-- Use browser DevTools (F12 → Inspector) to find the correct selectors for input fields
+- Verify the site is accessible at its URL in your browser and credentials are correct
+- Check `logs/agent.log` for `Smart login step N:` lines to see where it stalled
+- If the login page renders inside an **iframe**, Smart Login may not work — switch to **SSO / Multi-Step** and define each step with explicit CSS selectors (use browser DevTools F12 → Inspector to find them)
 
 ### DVWA shows a blank page or database error
 Run the DVWA setup first:
@@ -198,18 +240,22 @@ docker logs bughunter-juice-shop
 The image may still be pulling on first run. Wait 60 seconds and retry.
 
 ### No bugs found
-- The agent explores up to 5 pages per run by default; complex apps may need multiple runs targeting different flows
-- Add specific notes when creating the run to focus the agent on known-vulnerable areas
+- Increase **Pages to explore** (slider in New Run modal) — default is 5
+- Use the **What to test** field to direct the agent to specific flows or pages
+- Run multiple times targeting different areas — each run is independent
 - Check `logs/agent.log` for the full exploration trace
 
 ---
 
 ## Tips for Better Results
 
-- **Use notes** when starting a run to direct the agent: `"Focus on the login form and user registration flow"`
+- **Use "What to test"** to direct the agent: `"Test the client listing — search, filter, and pagination"`
+- **Use "Focus areas"** for targeted scanning: `"authentication, forms, data display"`
+- **Increase pages** for deeper coverage — set to 10–15 for production apps
 - **Run multiple times** targeting different parts of the app — each run is independent
 - **DVWA Low difficulty** produces the most findings as security controls are disabled
 - **Juice Shop** has over 100 challenges — each run will likely surface different issues
+- **Enterprise apps**: register once per user type (SSO user / non-SSO user) with their respective credentials
 
 ---
 
@@ -224,4 +270,18 @@ DVWA              →  http://localhost:8080
   Username: admin
   Password: password
   Setup:    http://localhost:8080/setup.php  (run once after first launch)
+
+Enterprise apps   →  set KF_EMAIL and KF_IDP_PASSWORD in backend/.env
+                     auto-registered on ./start.sh
 ```
+
+## Authentication Mode Quick Reference
+
+| Scenario | Mode to use |
+|----------|-------------|
+| Public app, no login | None |
+| Standard login form (email + password on one page) | Smart Login (Auto) |
+| Email-first login (password on second page) | Smart Login (Auto) |
+| SSO / IDP redirect (Microsoft, Okta, Google) | Smart Login (Auto) |
+| Login inside an iframe | SSO / Multi-Step (manual) |
+| MFA / OTP required | SSO / Multi-Step (manual) |

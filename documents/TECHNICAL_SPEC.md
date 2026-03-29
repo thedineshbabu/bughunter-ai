@@ -1,6 +1,6 @@
 # BugHunter.AI — Technical Specification
 
-> Version: 1.0 | Date: 2026-03-26 | Codebase: `bughunter-ai`
+> Version: 1.1 | Date: 2026-03-29 | Codebase: `bughunter-ai`
 
 ---
 
@@ -259,10 +259,15 @@ CREATE INDEX idx_apps_user_id ON apps(user_id);
 | updated_at | TIMESTAMPTZ | Updated on PATCH |
 
 **Credentials JSONB Structure (decrypted):**
+
+*Smart Login (Auto-detect)* — just email and password; the agent figures out the flow:
+```json
+{ "username": "user@example.com", "password": "plaintext-password" }
+```
+
+*SSO / Multi-Step (manual override)* — explicit Playwright step sequence:
 ```json
 {
-  "username": "user@example.com",
-  "password": "plaintext-password",
   "login_flow": [
     { "action": "fill",                "selector": "input[type='email']",    "value": "user@example.com" },
     { "action": "click",               "selector": "button[type='submit']"                               },
@@ -553,13 +558,23 @@ Response `200`:
 
 Request:
 ```json
-{ "app_id": "uuid", "notes": "Optional notes" }
+{
+  "app_id": "uuid",
+  "notes": "Optional notes",
+  "test_config": {
+    "max_pages": 10,
+    "instructions": "Test the client listing page — search, filters, and pagination",
+    "focus_areas": "authentication, forms, navigation"
+  }
+}
 ```
+
+`test_config` is optional. All sub-fields are optional. Defaults: `max_pages=5`, empty instructions/focus_areas.
 
 Flow:
 1. Insert `test_runs` row with `status = 'pending'`
 2. Decrypt app credentials
-3. `RPUSH bughunter:jobs` (raw Redis list) + BullMQ `queue.add()`
+3. `RPUSH bughunter:jobs` (raw Redis list) + BullMQ `queue.add()` — both include `test_config`
 4. Return created run
 
 Response `201`: `{ "run": { "id": "uuid", "status": "pending", ... } }`
@@ -687,7 +702,7 @@ decrypt(ciphertext) // ciphertext string → JS object
 }
 ```
 
-**`enqueueTestRun(runId, appUrl, credentials)`** does two things:
+**`enqueueTestRun(runId, appUrl, credentials, testConfig)`** does two things:
 1. `RPUSH bughunter:jobs <json>` — consumed by Python via BLPOP
 2. `queue.add('run', payload, options)` — BullMQ for monitoring/retries
 
@@ -794,8 +809,8 @@ Navigation links:
 - Lists all registered apps with URL, creation date
 - **Create/Edit modal** with three credential modes:
   1. **None** — no credentials
-  2. **Simple** — username + password fields
-  3. **SSO / Multi-Step** — `LoginFlowBuilder` component
+  2. **Smart Login (Auto)** — email + password; agent drives login via LLM
+  3. **SSO / Multi-Step** — `LoginFlowBuilder` component (manual override)
 - `LoginFlowBuilder` sub-component: dynamically add/remove/reorder login steps; each step has `action`, `selector`, `value`, `timeout` fields
 - Delete app with confirmation
 
@@ -819,7 +834,12 @@ Navigation links:
 - Modal overlay
 - Loads app list on mount
 - Select app from dropdown
-- Calls `POST /api/runs` on submit
+- **Test Configuration section:**
+  - *What to test* — free-text instructions passed to the agent (e.g. `"Test client listing page — search, filters, pagination"`)
+  - *Focus areas* — comma-separated areas to prioritize (e.g. `"authentication, forms"`)
+  - *Pages to explore* — range slider 1–20 (default 5)
+- Optional *Notes* field for run-level record-keeping
+- Sends `test_config` object in `POST /api/runs` body
 - On success, redirects user to `/runs/:newRunId`
 
 ---
@@ -888,8 +908,10 @@ Temperature is fixed at 0.2 for consistent, deterministic LLM outputs.
 
 ```python
 class AgentState(TypedDict):
+    run_id: Optional[str]              # UUID of the test run (for SSE publishing)
     url: str                           # Target app URL
     credentials: Optional[Dict]        # Decrypted credentials from backend
+    test_config: Optional[Dict]        # {max_pages, instructions, focus_areas}
     current_page: Optional[str]        # Last visited URL
     screenshots: List[Dict]            # {label, base64, url, timestamp, local_path}
     screenshot_paths: List[str]        # Paths (after base64 stripped)
@@ -899,6 +921,15 @@ class AgentState(TypedDict):
     error: Optional[str]               # Error message if pipeline fails
     status: str                        # pending | running | completed | failed
     report: Optional[List[Dict]]       # Final structured bug reports
+```
+
+**`test_config` shape:**
+```python
+{
+    "max_pages": 10,           # Override AGENT_MAX_PAGES for this run
+    "instructions": "...",     # Free-text guidance for Orchestrator + Explorer
+    "focus_areas": "...",      # Comma-separated areas to prioritise
+}
 ```
 
 ---
@@ -948,15 +979,18 @@ def explore_node(state: AgentState) -> AgentState:
 
 #### OrchestratorAgent (`agents/orchestrator.py`)
 
-**Input:** `url`, `credentials`
+**Input:** `url`, `credentials`, `test_config`
 
 **Process:**
 1. Builds auth context description from credentials shape:
    - No credentials → "No authentication required"
-   - Simple credentials → "Simple username/password at `url`"
-   - Login flow → "Multi-step SSO/IDP flow"
-2. Calls `get_llm().invoke(prompt)` with URL and auth context
-3. LLM returns testing strategy: pages to test, user journeys, focus areas, notes
+   - `{username, password}` → "Smart auto-login with email + password"
+   - `{login_flow}` → "Multi-step SSO/IDP flow (N steps)"
+2. Incorporates `test_config` into the planning prompt:
+   - `instructions` → appended as "User instructions: ..."
+   - `focus_areas` → appended as "Focus areas: ..."
+   - `max_pages` → appended as "Explorer will visit up to N page(s)"
+3. Calls `get_llm().invoke(prompt)` and receives a structured test strategy
 
 **Output mutations:**
 - `test_steps`: Appended with `{ "action": "plan", "result": <llm_response> }`
@@ -966,28 +1000,41 @@ def explore_node(state: AgentState) -> AgentState:
 
 #### ExplorerAgent (`agents/explorer.py`)
 
-**Input:** `url`, `credentials`, `test_steps` (plan)
+**Input:** `url`, `credentials`, `test_config`, `test_steps` (plan)
 
 **Process:**
 1. Launches headless Chromium (1280×800 viewport)
-2. If credentials provided:
-   - **Multi-step flow** (`credentials.login_flow`): Execute each step in sequence (fill, click, wait_for_navigation, wait_for_selector, wait). Dismiss overlays before each step. Retry with `force=True` on overlay-blocked clicks.
-   - **Simple credentials**: Auto-fill email/username + password fields, click submit.
-3. Navigate up to `AGENT_MAX_PAGES` pages within the same domain
-4. For each page:
+2. Reads `test_config.max_pages` (falls back to `AGENT_MAX_PAGES` env var, default 5)
+3. If credentials provided, selects login strategy:
+   - **Option A — SSO / Multi-Step** (`credentials.login_flow`): Execute each pre-configured step in sequence. Dismiss overlays before each step. Retry with `force=True` on overlay-blocked clicks.
+   - **Option B — Smart Login (Auto)** (`credentials.username` + `credentials.password`): LLM-driven iterative login loop (see below).
+4. Navigate up to `max_pages` pages within the same domain
+5. For each page:
    - Capture full-page screenshot
+   - Ask LLM what to test (incorporating `test_config.instructions` and `test_config.focus_areas`)
    - Log console errors and network failures
    - Collect all links for further exploration
-5. Close browser
+6. Close browser
 
-**Input selectors tried for simple login:**
-- Email: `input[type='email'], input[name='username'], input[name='email']`
-- Password: `input[type='password']`
-- Submit: `button[type='submit'], input[type='submit'], button:has-text('Login'), button:has-text('Sign in')`
+**Smart Login loop (Option B):**
+
+Replaces the old dumb single-attempt login. Runs up to 12 iterations:
+1. Dismiss overlays, read current page HTML
+2. If URL is no longer a login/auth page (after first step) → success
+3. Build prompt with current HTML + email (never password) using `__PASSWORD__` placeholder
+4. LLM returns one action: `{action, selector, value, done}`
+5. Substitute `__PASSWORD__` → real password locally before execution
+6. Execute action (fill / click / wait_for_navigation / wait_for_selector)
+7. Repeat; stop when LLM sets `done=true`, URL escapes auth pages, or 12 iterations reached
+
+The real password is **never sent to the LLM**. Works for:
+- Standard single-page login forms
+- Email-first pages (password appears on second page)
+- SSO/IDP redirects (Microsoft Entra, Okta, Google)
 
 **Output mutations:**
 - `screenshots`: Array of `{ label, base64, url, timestamp, local_path }`
-- `test_steps`: Array of navigation steps and error observations
+- `test_steps`: Navigation steps, per-iteration smart login records, error observations
 - `current_page`: Last URL visited
 
 ---
@@ -1122,8 +1169,10 @@ class JobRunner:
 
     def _build_state(self, job) -> AgentState:
         return {
+            'run_id': job['run_id'],
             'url': job['app_url'],
             'credentials': job.get('credentials'),
+            'test_config': job.get('test_config'),
             'current_page': None,
             'screenshots': [],
             'screenshot_paths': [],
@@ -1141,8 +1190,13 @@ class JobRunner:
 {
   "run_id": "uuid",
   "app_url": "https://example.com",
-  "credentials": { "username": "...", "password": "...", "login_flow": [...] },
-  "enqueued_at": "2026-03-26T12:00:00Z"
+  "credentials": { "username": "...", "password": "..." },
+  "test_config": {
+    "max_pages": 10,
+    "instructions": "Test the client listing page",
+    "focus_areas": "authentication, forms"
+  },
+  "enqueued_at": "2026-03-29T12:00:00Z"
 }
 ```
 
@@ -1317,7 +1371,7 @@ Python runner.poll()
 | REDIS_URL | Yes | — | Redis connection string |
 | BACKEND_URL | Yes | http://localhost:5000 | Backend base URL |
 | AGENT_API_SECRET | Yes | — | Shared secret for PATCH /api/runs |
-| AGENT_MAX_PAGES | No | 5 | Max pages to explore per run |
+| AGENT_MAX_PAGES | No | 5 | Default max pages per run (overridable per-run via `test_config.max_pages`) |
 | AWS_ACCESS_KEY_ID | No | — | S3 screenshot upload |
 | AWS_SECRET_ACCESS_KEY | No | — | S3 screenshot upload |
 | S3_BUCKET | No | — | S3 bucket name |
@@ -1336,6 +1390,8 @@ Python runner.poll()
 | CREDENTIALS_ENCRYPTION_KEY | Yes | 64-char hex string (32 bytes) |
 | FRONTEND_URL | Yes | CORS allowed origin |
 | AGENT_API_SECRET | Yes | Shared secret for agent auth |
+| KF_EMAIL | No | Email for Korn Ferry Talent auto-registration on startup |
+| KF_IDP_PASSWORD | No | IDP password for Korn Ferry Talent auto-registration on startup |
 
 ### Generating Secrets
 
