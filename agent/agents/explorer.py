@@ -1,11 +1,17 @@
 """
 BugHunter.AI - ExplorerAgent
 Uses Playwright to navigate the app, capture screenshots, and log interaction steps.
-Supports multi-step SSO/IDP login flows via the credentials.login_flow config.
+
+Login modes:
+  A) Multi-step / SSO  — credentials.login_flow list (manual, power-user override)
+  B) Smart auto-login  — credentials.username + password; LLM drives each step
+                         iteratively, handling email-first pages and SSO redirects
 """
 
+import json
 import logging
 import os
+import re
 import time
 
 from langchain_core.messages import HumanMessage
@@ -124,6 +130,103 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
         lower = url.lower()
         return any(kw in lower for kw in ("login", "signin", "sign-in", "auth", "sso"))
 
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        """Strip markdown fences and extract first JSON object or array from LLM output."""
+        text = re.sub(r"```(?:json)?\s*", "", text).strip().rstrip("`").strip()
+        for start_char, end_char in [('{', '}'), ('[', ']')]:
+            idx = text.find(start_char)
+            if idx != -1:
+                depth = 0
+                for i, ch in enumerate(text[idx:], idx):
+                    if ch == start_char:
+                        depth += 1
+                    elif ch == end_char:
+                        depth -= 1
+                        if depth == 0:
+                            return text[idx:i + 1]
+        return text
+
+    def _smart_login(self, email: str, password: str) -> bool:
+        """Use the LLM iteratively to navigate any login flow (single-page, email-first, SSO).
+
+        The password is never sent to the LLM — a placeholder is used and substituted
+        locally before each browser action.
+        """
+        MAX_STEPS = 12
+        PASSWORD_PLACEHOLDER = "__PASSWORD__"
+
+        for step_num in range(MAX_STEPS):
+            self.browser.dismiss_overlays()
+            current_url = self.browser.get_current_url()
+
+            # After the first step, if we've left all auth pages the login succeeded
+            if step_num > 0 and not self._is_login_page(current_url):
+                logger.info(f"Smart login: URL is no longer an auth page ({current_url}) — success")
+                return True
+
+            source = self.browser.get_page_source()
+            prompt = f"""You are automating login for a web app.
+Current URL: {current_url}
+User email: {email}
+HTML (first 3000 chars):
+{source[:3000]}
+
+Determine the single next action to take to progress the login.
+If login appears complete (you are past all login/auth pages), return {{"done": true}}.
+Otherwise return exactly ONE action as a JSON object:
+{{
+  "action": "fill" | "click" | "wait_for_navigation" | "wait_for_selector",
+  "selector": "<css selector>",
+  "value": "<text to type — use {PASSWORD_PLACEHOLDER} for any password field>",
+  "done": false
+}}
+Return only the JSON object, no explanation."""
+
+            try:
+                response = self.llm.invoke([HumanMessage(content=prompt)])
+                step = json.loads(self._extract_json(response.content))
+            except Exception as exc:
+                logger.warning(f"Smart login: failed to parse LLM response at step {step_num + 1}: {exc}")
+                break
+
+            if step.get("done"):
+                logger.info("Smart login: LLM signalled login complete")
+                return True
+
+            action = step.get("action")
+            selector = step.get("selector", "")
+            value = step.get("value", "").replace(PASSWORD_PLACEHOLDER, password)
+
+            logger.info(f"Smart login step {step_num + 1}/{MAX_STEPS}: {action} '{selector}'")
+
+            try:
+                if action == "fill":
+                    self.browser.wait_for_selector(selector, timeout=10000)
+                    self.browser.fill_form(selector, value)
+                elif action == "click":
+                    self.browser.wait_for_selector(selector, timeout=10000)
+                    self.browser.click(selector)
+                elif action == "wait_for_navigation":
+                    self.browser.wait_for_navigation(timeout=15000)
+                elif action == "wait_for_selector":
+                    self.browser.wait_for_selector(selector, timeout=10000)
+                else:
+                    logger.warning(f"Smart login: unknown action '{action}', skipping")
+            except Exception as exc:
+                logger.warning(f"Smart login: step {step_num + 1} failed ({exc}), retrying after overlay dismiss")
+                self.browser.dismiss_overlays()
+                try:
+                    if action == "click":
+                        self.browser.click(selector, force=True)
+                    elif action == "fill":
+                        self.browser.fill_form(selector, value)
+                except Exception:
+                    break
+
+        logger.warning("Smart login: max steps reached without confirmed success")
+        return False
+
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
         run_id = state.get("run_id")
@@ -230,7 +333,7 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
                             }
                         )
 
-                # Option B: Simple same-page login (email + password on one page)
+                # Option B: Smart LLM-driven login (handles email-first, SSO redirects, single-page)
                 elif (
                     credentials
                     and "login_flow" not in credentials
@@ -238,27 +341,34 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
                     and self._is_login_page(current_url)
                 ):
                     try:
-                        self.browser.fill_form(
-                            "input[type='email'], input[name='username']",
+                        success = self._smart_login(
                             credentials.get("username", ""),
-                        )
-                        self.browser.fill_form(
-                            "input[type='password']",
                             credentials.get("password", ""),
-                        )
-                        self.browser.click(
-                            "button[type='submit'], input[type='submit']"
                         )
                         self._login_done = True
                         test_steps.append(
                             {
                                 "agent": "explorer",
-                                "action": "login_attempt",
+                                "action": "smart_login_completed" if success else "smart_login_partial",
                                 "url": current_url,
+                                "detail": (
+                                    f"Smart login {'succeeded' if success else 'reached max steps'}, "
+                                    f"now at {self.browser.get_current_url()}"
+                                ),
                             }
                         )
+                        post_shot = capture(self.browser.page, label="post_login")
+                        screenshots.append(post_shot)
                     except Exception as e:
-                        logger.warning(f"Login attempt failed: {e}")
+                        logger.warning(f"Smart login failed: {e}")
+                        test_steps.append(
+                            {
+                                "agent": "explorer",
+                                "action": "smart_login_failed",
+                                "url": current_url,
+                                "detail": str(e),
+                            }
+                        )
 
                 # Record console + network errors
                 console_errors = self.browser.get_console_errors()

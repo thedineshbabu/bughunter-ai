@@ -126,7 +126,7 @@ function AppModal({ app, onClose, onSave }) {
           <div>
             <label style={labelStyle}>Authentication</label>
             <div style={{ display: 'flex', gap: '8px' }}>
-              {[{ value: 'none', label: 'None' }, { value: 'simple', label: 'Simple Login' }, { value: 'sso', label: 'SSO / Multi-Step' }].map(opt => (
+              {[{ value: 'none', label: 'None' }, { value: 'simple', label: 'Smart Login (Auto)' }, { value: 'sso', label: 'SSO / Multi-Step' }].map(opt => (
                 <button key={opt.value} type="button" onClick={() => setAuthMode(opt.value)} style={{
                   flex: 1, padding: '9px 6px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 500,
                   border: authMode === opt.value ? '2px solid var(--secondary)' : '1px solid var(--outline-variant)',
@@ -140,7 +140,7 @@ function AppModal({ app, onClose, onSave }) {
           {authMode === 'simple' && (
             <div style={{ background: 'var(--surface-container-low)', borderRadius: '10px', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '10px' }}>
               <div>
-                <label style={labelStyle}>Username / Email</label>
+                <label style={labelStyle}>Email</label>
                 <input type="text" value={form.username} onChange={e => setForm({ ...form, username: e.target.value })} placeholder="user@example.com" className="ent-input" style={inputStyle} />
               </div>
               <div>
