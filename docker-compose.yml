@@ -35,6 +35,20 @@ services:
       timeout: 5s
       retries: 5
 
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: bughunter-juice-shop
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+
+  dvwa:
+    image: vulnerables/web-dvwa:latest
+    container_name: bughunter-dvwa
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+
 volumes:
   postgres_data:
     driver: local

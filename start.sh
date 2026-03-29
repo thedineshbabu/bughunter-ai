@@ -78,7 +78,7 @@ info "node $(node --version)  |  $($PYTHON_CMD --version 2>&1)  |  $(docker --ve
 # ------------------------------------
 # 2. Start Docker services
 # ------------------------------------
-step "Starting Docker containers (PostgreSQL + Redis)"
+step "Starting Docker containers (PostgreSQL + Redis + sample sites)"
 (cd "$SCRIPT_DIR" && docker compose up -d) || fail "docker compose failed. Is Docker running?"
 ok "docker compose started"
 
@@ -109,7 +109,26 @@ done
 ok "Redis is healthy"
 
 # ------------------------------------
-# 5. Database migrations
+# 5. Wait for sample test sites (non-blocking — just inform)
+# ------------------------------------
+step "Waiting for sample test sites"
+
+wait_http() {
+    local name="$1" url="$2" max=20 n=0
+    until curl -sf --max-time 3 "$url" >/dev/null 2>&1; do
+        n=$((n+1))
+        [ $n -ge $max ] && { warn "$name not reachable after ${max} attempts — it may still be starting"; return; }
+        info "Waiting for $name ($n/$max)..."
+        sleep 3
+    done
+    ok "$name is up ($url)"
+}
+
+wait_http "Juice Shop" "http://localhost:3000"
+wait_http "DVWA"       "http://localhost:8080"
+
+# ------------------------------------
+# 6. Database migrations (renumbered)
 # ------------------------------------
 step "Running database migrations"
 
@@ -119,6 +138,7 @@ MIGRATIONS=(
     "database/migrations/003_test_runs.sql"
     "database/migrations/004_bug_reports.sql"
     "database/migrations/005_not_null_constraints.sql"
+    "database/migrations/006_credentials_text.sql"
 )
 
 for mig in "${MIGRATIONS[@]}"; do
@@ -274,6 +294,88 @@ PIDS+=($!)
 ok "Frontend started     (PID ${PIDS[-1]}  |  logs/frontend.log  |  http://localhost:5173)"
 
 # ------------------------------------
+# 11. Create default BugHunter account
+# ------------------------------------
+step "Creating default account"
+
+DEFAULT_EMAIL="admin@bughunter.local"
+DEFAULT_PASS="BugHunter@123"
+DEFAULT_NAME="BugHunter Admin"
+BACKEND_API="http://localhost:5000/api"
+
+# Wait up to 30 s for the backend to accept connections
+info "Waiting for backend API..."
+for i in $(seq 1 15); do
+    curl -sf --max-time 2 "$BACKEND_API/auth/me" >/dev/null 2>&1 || true
+    if curl -sf --max-time 2 "$BACKEND_API/auth/me" -o /dev/null -w "%{http_code}" 2>/dev/null | grep -qE "^(200|401)"; then
+        break
+    fi
+    sleep 2
+done
+
+REGISTER_RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BACKEND_API/auth/register" \
+    -H "Content-Type: application/json" \
+    -d "{\"name\":\"$DEFAULT_NAME\",\"email\":\"$DEFAULT_EMAIL\",\"password\":\"$DEFAULT_PASS\"}" 2>/dev/null)
+
+if [ "$REGISTER_RESP" = "201" ] || [ "$REGISTER_RESP" = "200" ]; then
+    ok "Default account created"
+elif [ "$REGISTER_RESP" = "409" ]; then
+    ok "Default account already exists"
+else
+    warn "Could not create default account (HTTP $REGISTER_RESP) — register manually at http://localhost:5173"
+fi
+
+# Obtain a JWT for the default account
+AUTH_TOKEN=$(curl -s -X POST "$BACKEND_API/auth/login" \
+    -H "Content-Type: application/json" \
+    -d "{\"email\":\"$DEFAULT_EMAIL\",\"password\":\"$DEFAULT_PASS\"}" 2>/dev/null \
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('token',''))" 2>/dev/null)
+
+register_app() {
+    local app_name="$1" app_url="$2" creds_json="$3"
+
+    # Fetch existing apps into a temp file; use env var to pass URL into Python
+    # (avoids both the pipe-vs-heredoc conflict and shell quoting issues with URLs)
+    local tmp_apps; tmp_apps=$(mktemp)
+    curl -s -H "Authorization: Bearer $AUTH_TOKEN" "$BACKEND_API/apps" > "$tmp_apps" 2>/dev/null
+
+    local existing
+    existing=$(APP_URL="$app_url" python3 -c "
+import json, os, sys
+url  = os.environ['APP_URL']
+data = json.load(open(sys.argv[1]))
+print(next((a['id'] for a in data.get('apps', []) if a.get('url') == url), ''))
+" "$tmp_apps" 2>/dev/null)
+    rm -f "$tmp_apps"
+
+    if [ -n "$existing" ]; then
+        ok "App already registered: $app_name"
+        return
+    fi
+
+    local resp
+    resp=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BACKEND_API/apps" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $AUTH_TOKEN" \
+        -d "{\"name\":\"$app_name\",\"url\":\"$app_url\",\"credentials\":$creds_json}" 2>/dev/null)
+    if [ "$resp" = "201" ]; then
+        ok "App registered: $app_name ($app_url)"
+    else
+        warn "Could not register app '$app_name' (HTTP $resp)"
+    fi
+}
+
+if [ -n "$AUTH_TOKEN" ]; then
+    step "Registering sample apps"
+    register_app "OWASP Juice Shop" "http://localhost:3000" \
+        '{"username":"admin@juice-sh.op","password":"admin123"}'
+    register_app "DVWA" "http://localhost:8080/login.php" \
+        '{"username":"admin","password":"password"}'
+else
+    warn "Could not obtain auth token — skipping sample app registration"
+fi
+
+# ------------------------------------
 # Done — wait and handle Ctrl-C
 # ------------------------------------
 echo ""
@@ -286,6 +388,14 @@ echo -e "  Backend API  ->  http://localhost:5000"
 echo -e "  Agent API    ->  http://localhost:5001"
 echo -e "  PostgreSQL   ->  localhost:5432  (db: bughunter)"
 echo -e "  Redis        ->  localhost:6379"
+echo -e ""
+echo -e "  Sample test sites:"
+echo -e "  Juice Shop   ->  http://localhost:3000  (admin@juice-sh.op / admin123)"
+echo -e "  DVWA         ->  http://localhost:8080  (admin / password)"
+echo -e ""
+echo -e "${CYN}  Default BugHunter account:${RST}"
+echo -e "  Email        ->  ${GRN}$DEFAULT_EMAIL${RST}"
+echo -e "  Password     ->  ${GRN}$DEFAULT_PASS${RST}"
 echo ""
 echo -e "${GRY}  PIDs: agent=${PIDS[0]}  backend=${PIDS[1]}  frontend=${PIDS[2]}${RST}"
 echo -e "${GRY}  Logs: tail -f logs/agent.log   (or backend.log / frontend.log)${RST}"

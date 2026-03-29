@@ -62,7 +62,7 @@ Write-Info "node $nodeVer  |  $pythonVer  |  $dockerVer"
 # ------------------------------------
 # 2. Start Docker services
 # ------------------------------------
-Write-Step "Starting Docker containers (PostgreSQL + Redis)"
+Write-Step "Starting Docker containers (PostgreSQL + Redis + sample sites)"
 Push-Location $Root
 docker compose up -d
 $dockerExit = $LASTEXITCODE
@@ -117,7 +117,36 @@ if ($redisStatus -ne "healthy") {
 Write-OK "Redis is healthy"
 
 # ------------------------------------
-# 5. Run database migrations
+# 5. Wait for sample test sites (non-blocking)
+# ------------------------------------
+Write-Step "Waiting for sample test sites"
+
+function Wait-Http {
+    param([string]$name, [string]$url, [int]$maxAttempts = 20)
+    $n = 0
+    $up = $false
+    do {
+        $n++
+        try {
+            $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+            if ($resp.StatusCode -lt 400) { $up = $true; break }
+        } catch { }
+        Write-Info "Waiting for $name ($n/$maxAttempts)..."
+        Start-Sleep -Seconds 3
+    } while ($n -lt $maxAttempts)
+
+    if ($up) {
+        Write-OK "$name is up ($url)"
+    } else {
+        Write-Warn "$name not reachable after $maxAttempts attempts - it may still be starting"
+    }
+}
+
+Wait-Http "Juice Shop" "http://localhost:3000"
+Wait-Http "DVWA"       "http://localhost:8080"
+
+# ------------------------------------
+# 6. Run database migrations
 # ------------------------------------
 Write-Step "Running database migrations"
 
@@ -126,7 +155,8 @@ $migrations = @(
     "database/migrations/002_apps.sql",
     "database/migrations/003_test_runs.sql",
     "database/migrations/004_bug_reports.sql",
-    "database/migrations/005_not_null_constraints.sql"
+    "database/migrations/005_not_null_constraints.sql",
+    "database/migrations/006_credentials_text.sql"
 )
 
 # Temporarily allow non-terminating errors so psql NOTICE/WARNING lines on stderr
@@ -343,6 +373,87 @@ Start-Process powershell -ArgumentList "-NoExit", "-Command", $frontendCmd -Wind
 Write-OK "Frontend started  (logs: logs\frontend.log  |  http://localhost:5173)"
 
 # ------------------------------------
+# 11. Create default BugHunter account
+# ------------------------------------
+Write-Step "Creating default account"
+
+$defaultEmail = "admin@bughunter.local"
+$defaultPass  = "BugHunter@123"
+$defaultName  = "BugHunter Admin"
+$backendApi   = "http://localhost:5000/api"
+
+Write-Info "Waiting for backend API..."
+$backendReady = $false
+for ($i = 1; $i -le 15; $i++) {
+    try {
+        $check = Invoke-WebRequest -Uri "$backendApi/auth/me" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+        $backendReady = $true; break
+    } catch {
+        if ($_.Exception.Response -and $_.Exception.Response.StatusCode.value__ -in @(401, 403)) {
+            $backendReady = $true; break
+        }
+    }
+    Start-Sleep -Seconds 2
+}
+
+$body = @{ name = $defaultName; email = $defaultEmail; password = $defaultPass } | ConvertTo-Json
+try {
+    $resp = Invoke-WebRequest -Uri "$backendApi/auth/register" -Method POST `
+        -ContentType "application/json" -Body $body -UseBasicParsing -ErrorAction Stop
+    Write-OK "Default account created"
+} catch {
+    $code = $_.Exception.Response.StatusCode.value__
+    if ($code -eq 409) {
+        Write-OK "Default account already exists"
+    } else {
+        Write-Warn "Could not create default account (HTTP $code) - register manually at http://localhost:5173"
+    }
+}
+
+# Obtain a JWT for the default account
+$authToken = $null
+try {
+    $loginBody = @{ email = $defaultEmail; password = $defaultPass } | ConvertTo-Json
+    $loginResp = Invoke-WebRequest -Uri "$backendApi/auth/login" -Method POST `
+        -ContentType "application/json" -Body $loginBody -UseBasicParsing -ErrorAction Stop
+    $authToken = ($loginResp.Content | ConvertFrom-Json).token
+} catch {
+    Write-Warn "Could not obtain auth token - skipping sample app registration"
+}
+
+function Register-App {
+    param([string]$appName, [string]$appUrl, [string]$credsJson)
+    try {
+        $existing = Invoke-WebRequest -Uri "$backendApi/apps" -UseBasicParsing `
+            -Headers @{ Authorization = "Bearer $authToken" } -ErrorAction Stop
+        $apps = ($existing.Content | ConvertFrom-Json).apps
+        if ($apps | Where-Object { $_.url -eq $appUrl }) {
+            Write-OK "App already registered: $appName"
+            return
+        }
+    } catch { }
+
+    $appBody = "{`"name`":`"$appName`",`"url`":`"$appUrl`",`"credentials`":$credsJson}"
+    try {
+        Invoke-WebRequest -Uri "$backendApi/apps" -Method POST -UseBasicParsing `
+            -ContentType "application/json" -Body $appBody `
+            -Headers @{ Authorization = "Bearer $authToken" } -ErrorAction Stop | Out-Null
+        Write-OK "App registered: $appName ($appUrl)"
+    } catch {
+        $code = $_.Exception.Response.StatusCode.value__
+        Write-Warn "Could not register app '$appName' (HTTP $code)"
+    }
+}
+
+if ($authToken) {
+    Write-Step "Registering sample apps"
+    Register-App "OWASP Juice Shop" "http://localhost:3000" `
+        '{"username":"admin@juice-sh.op","password":"admin123"}'
+    Register-App "DVWA" "http://localhost:8080/login.php" `
+        '{"username":"admin","password":"password"}'
+}
+
+# ------------------------------------
 # Done
 # ------------------------------------
 Write-Host ""
@@ -355,6 +466,14 @@ Write-Host "  Backend API  ->  http://localhost:5000"  -ForegroundColor White
 Write-Host "  Agent API    ->  http://localhost:5001"  -ForegroundColor White
 Write-Host "  PostgreSQL   ->  localhost:5432  (db: bughunter)" -ForegroundColor White
 Write-Host "  Redis        ->  localhost:6379"          -ForegroundColor White
+Write-Host ""                                           -ForegroundColor White
+Write-Host "  Sample test sites:"                       -ForegroundColor White
+Write-Host "  Juice Shop   ->  http://localhost:3000  (admin@juice-sh.op / admin123)" -ForegroundColor White
+Write-Host "  DVWA         ->  http://localhost:8080  (admin / password)"              -ForegroundColor White
+Write-Host ""                                           -ForegroundColor White
+Write-Host "  Default BugHunter account:"               -ForegroundColor Cyan
+Write-Host "  Email        ->  $defaultEmail"           -ForegroundColor Green
+Write-Host "  Password     ->  $defaultPass"            -ForegroundColor Green
 Write-Host ""
 Write-Host "  Live logs in .\logs\ (agent.log / backend.log / frontend.log)" -ForegroundColor Gray
 Write-Host "  Three PowerShell windows are running the services." -ForegroundColor Gray
