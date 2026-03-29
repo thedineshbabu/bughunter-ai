@@ -36,10 +36,23 @@ class OrchestratorAgent:
         else:
             auth_context = "No credentials provided — test as an anonymous user."
 
+        test_config = state.get("test_config") or {}
+        user_instructions = test_config.get("instructions", "").strip()
+        focus_areas = test_config.get("focus_areas", "").strip()
+        max_pages = test_config.get("max_pages", 5)
+
+        custom_section = ""
+        if user_instructions:
+            custom_section += f"\nUser instructions: {user_instructions}"
+        if focus_areas:
+            custom_section += f"\nFocus areas: {focus_areas}"
+        if max_pages:
+            custom_section += f"\nThe explorer will visit up to {max_pages} page(s)."
+
         prompt = f"""You are a senior QA engineer. Analyze this web application URL and create a testing strategy.
 
 URL: {url}
-Auth context: {auth_context}
+Auth context: {auth_context}{custom_section}
 
 Provide:
 1. Key pages/flows to test (home, login, dashboard, forms, etc.)

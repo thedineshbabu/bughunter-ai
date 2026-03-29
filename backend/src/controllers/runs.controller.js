@@ -54,7 +54,7 @@ export async function listRuns(req, res, next) {
 /** POST /api/runs */
 export async function createRun(req, res, next) {
   try {
-    const { app_id } = req.body;
+    const { app_id, test_config } = req.body;
 
     // Verify app belongs to user
     const appResult = await query(
@@ -80,7 +80,7 @@ export async function createRun(req, res, next) {
     const plainCredentials = decrypt(app.credentials);
 
     // Enqueue job for the Python agent
-    await enqueueTestRun(run.id, app.url, plainCredentials);
+    await enqueueTestRun(run.id, app.url, plainCredentials, test_config || null);
 
     res.status(201).json({ run });
   } catch (err) {

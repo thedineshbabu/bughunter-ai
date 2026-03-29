@@ -29,12 +29,18 @@ class ExplorerAgent:
         self.browser = BrowserTool()
         self._login_done = False
 
-    def _ask_what_to_test(self, page_title: str, page_url: str, source_snippet: str) -> str:
+    def _ask_what_to_test(self, page_title: str, page_url: str, source_snippet: str, instructions: str = "", focus_areas: str = "") -> str:
         """Ask the LLM what actions to perform on the current page."""
+        custom = ""
+        if instructions:
+            custom += f"\nUser instructions: {instructions}"
+        if focus_areas:
+            custom += f"\nFocus areas: {focus_areas}"
+
         prompt = f"""You are a QA automation engineer exploring a web app.
 
 Current page: {page_url}
-Page title: {page_title}
+Page title: {page_title}{custom}
 HTML snippet (first 2000 chars):
 {source_snippet[:2000]}
 
@@ -125,6 +131,11 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
         screenshots = list(state.get("screenshots", []))
         test_steps = list(state.get("test_steps", []))
 
+        test_config = state.get("test_config") or {}
+        max_pages = int(test_config.get("max_pages") or MAX_PAGES)
+        instructions = test_config.get("instructions", "").strip()
+        focus_areas = test_config.get("focus_areas", "").strip()
+
         visited_urls = []
         pages_explored = 0
 
@@ -150,7 +161,7 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
             time.sleep(2)
             self.browser.dismiss_overlays()
 
-            for _ in range(MAX_PAGES):
+            for _ in range(max_pages):
                 pages_explored += 1
                 current_url = self.browser.get_current_url()
                 page_title = self.browser.get_title()
@@ -163,7 +174,7 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
                 publish_event(run_id, "page_visited", {"url": current_url, "page": pages_explored, "title": page_title, "message": f"Exploring: {current_url}"})
 
                 # Ask the LLM what to test
-                actions_json = self._ask_what_to_test(page_title, current_url, source)
+                actions_json = self._ask_what_to_test(page_title, current_url, source, instructions, focus_areas)
                 test_steps.append(
                     {
                         "agent": "explorer",

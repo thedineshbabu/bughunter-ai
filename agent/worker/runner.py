@@ -51,6 +51,7 @@ class JobRunner:
         run_id = job.get("run_id")
         app_url = job.get("app_url")
         credentials = job.get("credentials")
+        test_config = job.get("test_config")
 
         if not run_id or not app_url:
             logger.error(f"Invalid job payload: {job}")
@@ -66,6 +67,7 @@ class JobRunner:
             "run_id": run_id,
             "url": app_url,
             "credentials": credentials,
+            "test_config": test_config,
             "current_page": None,
             "screenshots": [],
             "screenshot_paths": [],

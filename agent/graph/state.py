@@ -31,5 +31,8 @@ class AgentState(TypedDict):
     error: Optional[str]
     status: str  # "pending" | "running" | "completed" | "failed"
 
+    # Test configuration supplied by the user at run-creation time
+    test_config: Optional[Dict[str, Any]]  # {max_pages, instructions, focus_areas}
+
     # Final structured report (populated by ReporterAgent)
     report: Optional[List[Dict[str, Any]]]

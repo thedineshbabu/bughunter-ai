@@ -249,6 +249,45 @@ Open http://localhost:5173
 
 ---
 
+## 📋 Registering an App with Multi-Step / SSO Login
+
+Some apps use an **email-first authentication flow** where the next step depends on the user type:
+- **Non-SSO users**: Email → password page → app
+- **SSO users**: Email → redirect to Identity Provider (IDP) → back to app
+
+Since these are branching flows, register the app **twice** — once for each user path — using **SSO / Multi-Step** auth mode.
+
+### Non-SSO User (email → password page → listing)
+
+| Step | Action | Selector | Value |
+|------|--------|----------|-------|
+| 1 | Fill input | `input[type="email"]` | `user@example.com` |
+| 2 | Click element | `button[type="submit"]` | *(leave blank)* |
+| 3 | Wait for element | `input[type="password"]` | timeout: 10000 |
+| 4 | Fill input | `input[type="password"]` | `yourpassword` |
+| 5 | Click element | `button[type="submit"]` | *(leave blank)* |
+| 6 | Wait for redirect | *(no selector)* | timeout: 15000 |
+
+### SSO User (email → IDP redirect → listing)
+
+| Step | Action | Selector | Value |
+|------|--------|----------|-------|
+| 1 | Fill input | `input[type="email"]` | `ssouser@company.com` |
+| 2 | Click element | `button[type="submit"]` | *(leave blank)* |
+| 3 | Wait for redirect | *(no selector)* | timeout: 15000 |
+| 4 | Fill input | IDP's email/username field | `ssouser@company.com` |
+| 5 | Fill input | `input[type="password"]` | `idppassword` |
+| 6 | Click element | `button[type="submit"]` | *(leave blank)* |
+| 7 | Wait for redirect | *(no selector)* | timeout: 20000 |
+
+**Tips:**
+- Use browser DevTools (F12 → Inspector) to find the exact CSS selectors for each field.
+- `Wait for element` before the password field ensures the agent waits for the second page to load.
+- `Wait for redirect` with a generous timeout (15–20s) handles slow IDP redirects.
+- Name apps clearly, e.g. `"MyApp - Standard Login"` and `"MyApp - SSO Login"`, so you can run targeted tests on each flow.
+
+---
+
 ## 🤖 Agent Descriptions
 
 ### OrchestratorAgent
