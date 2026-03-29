@@ -27,6 +27,11 @@ const router = Router();
 const createRunSchema = z.object({
   app_id: z.string().uuid('Must be a valid app UUID'),
   notes: z.string().optional(),
+  test_config: z.object({
+    max_pages:    z.number().int().min(1).max(20).optional(),
+    instructions: z.string().optional(),
+    focus_areas:  z.string().optional(),
+  }).optional(),
 });
 
 const listRunsQuerySchema = z.object({

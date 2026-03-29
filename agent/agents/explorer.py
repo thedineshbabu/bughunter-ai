@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import time
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage
 
@@ -239,6 +240,10 @@ Return only the JSON object, no explanation."""
         instructions = test_config.get("instructions", "").strip()
         focus_areas = test_config.get("focus_areas", "").strip()
 
+        # Use scheme+host for link filtering so post-login pages are explored
+        _parsed = urlparse(url)
+        base_origin = f"{_parsed.scheme}://{_parsed.netloc}"
+
         visited_urls = []
         pages_explored = 0
 
@@ -357,6 +362,9 @@ Return only the JSON object, no explanation."""
                                 ),
                             }
                         )
+                        post_login_url = self.browser.get_current_url()
+                        if post_login_url not in visited_urls:
+                            visited_urls.append(post_login_url)
                         post_shot = capture(self.browser.page, label="post_login")
                         screenshots.append(post_shot)
                     except Exception as e:
@@ -388,7 +396,7 @@ Return only the JSON object, no explanation."""
                 navigated = False
                 links = self.browser.get_all_links()
                 for link in links:
-                    if link and link not in visited_urls and link.startswith(url):
+                    if link and link not in visited_urls and link.startswith(base_origin):
                         try:
                             self.browser.navigate(link)
                             self.browser.dismiss_overlays()
