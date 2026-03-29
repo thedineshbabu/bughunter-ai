@@ -50,12 +50,49 @@ def save_run_to_db(run_id: str, status: str, results: Dict[str, Any]) -> bool:
         with _get_conn() as conn:
             cur = conn.cursor()
 
+            screenshots = results.get("screenshots", [])
+            test_steps  = results.get("test_steps", [])
+
+            # Build a per-page record: url → first screenshot filename for that page
+            page_map: dict = {}
+            for shot in screenshots:
+                page_url = shot.get("url", "")
+                if page_url and page_url not in page_map:
+                    local_path = shot.get("local_path", "")
+                    page_map[page_url] = {
+                        "url": page_url,
+                        "label": shot.get("label", ""),
+                        "screenshot_file": os.path.basename(local_path) if local_path else None,
+                    }
+
+            # Summarise what each page had tested (from observer steps)
+            steps_by_page: dict = {}
+            for step in test_steps:
+                url = step.get("url", "")
+                action = step.get("action", "")
+                if not url:
+                    continue
+                if url not in steps_by_page:
+                    steps_by_page[url] = []
+                if action in ("observe", "login_attempt", "login_flow_completed",
+                              "login_flow_failed", "errors_detected", "error"):
+                    steps_by_page[url].append({
+                        "action": action,
+                        "detail": step.get("detail") or step.get("console_errors") or "",
+                    })
+
+            pages_visited = []
+            for page in page_map.values():
+                pages_visited.append({
+                    **page,
+                    "steps": steps_by_page.get(page["url"], []),
+                })
+
             summary = {
                 "total_bugs": len(results.get("bugs_found", [])),
-                "pages_explored": len(set(
-                    s.get("url", "") for s in results.get("test_steps", []) if s.get("url")
-                )),
-                "screenshots_taken": len(results.get("screenshots", [])),
+                "pages_explored": len(page_map),
+                "screenshots_taken": len(screenshots),
+                "pages_visited": pages_visited,
             }
 
             cur.execute(
