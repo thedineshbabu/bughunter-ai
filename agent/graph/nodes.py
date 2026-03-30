@@ -24,7 +24,10 @@ def explorer_node(state: AgentState) -> AgentState:
     from agents.explorer import ExplorerAgent
 
     logger.info("[explorer] Starting browser exploration")
-    agent = ExplorerAgent()
+    credentials = state.get("credentials") or {}
+    extra_blocked = credentials.get("blocked_domains", []) if isinstance(credentials, dict) else []
+    allowed = credentials.get("allowed_domains", []) if isinstance(credentials, dict) else []
+    agent = ExplorerAgent(extra_blocked_domains=extra_blocked, allowed_domains=allowed)
     return agent.run(state)
 
 
@@ -67,3 +70,20 @@ def reporter_node(state: AgentState) -> AgentState:
     logger.info(f"[reporter] Reporting {len(state.get('bugs_found', []))} bugs")
     agent = ReporterAgent()
     return agent.run(state)
+
+
+def simple_reporter_node(state: AgentState) -> AgentState:
+    """Logs bugs without LLM enrichment (quick mode)."""
+    from agents.reporter import SimpleReporterAgent
+
+    logger.info(f"[reporter] Quick-logging {len(state.get('bugs_found', []))} bugs (no AI enrichment)")
+    agent = SimpleReporterAgent()
+    return agent.run(state)
+
+
+def route_reporter(state: AgentState) -> str:
+    """Route to the full LLM reporter or the simple logger based on test_config."""
+    test_config = state.get("test_config") or {}
+    if test_config.get("detailed_report", True):
+        return "reporter"
+    return "simple_reporter"

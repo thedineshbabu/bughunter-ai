@@ -1,6 +1,6 @@
 # BugHunter.AI — Technical Specification
 
-> Version: 1.1 | Date: 2026-03-29 | Codebase: `bughunter-ai`
+> Version: 1.3 | Date: 2026-03-30 | Codebase: `bughunter-ai`
 
 ---
 
@@ -93,7 +93,12 @@ bughunter-ai/
 │   │   ├── __init__.py
 │   │   ├── browser.py                # Synchronous Playwright wrapper
 │   │   ├── screenshot.py             # Screenshot capture + S3 upload
-│   │   └── storage.py                # PostgreSQL persistence (psycopg2)
+│   │   ├── storage.py                # PostgreSQL persistence (psycopg2)
+│   │   ├── events.py                 # Redis pub/sub for SSE progress
+│   │   ├── memory.py                 # Per-app memory load/save + fingerprints
+│   │   ├── json_utils.py             # Extract JSON from LLM output
+│   │   ├── bug_dedupe.py             # Deduplicate bugs before reporting
+│   │   └── pipeline_log.py           # Compact test_steps timeline for DB summary
 │   ├── worker/
 │   │   ├── __init__.py
 │   │   └── runner.py                 # JobRunner — Redis BLPOP poller
@@ -141,14 +146,23 @@ bughunter-ai/
 │       ├── services/
 │       │   └── api.js                # Axios client with interceptors
 │       ├── context/
-│       │   └── AuthContext.jsx       # Auth state + login/register/logout
+│       │   ├── AuthContext.jsx       # Auth state + login/register/logout
+│       │   └── SidebarContext.jsx    # Collapsed sidebar state
+│       ├── data/
+│       │   ├── agentProfiles.js      # Static copy for AI Agents page
+│       │   └── liveEventConfig.js    # SSE event type icons/colors (shared)
 │       └── components/
 │           ├── Dashboard.jsx         # Stats + recent runs home page
 │           ├── Sidebar.jsx           # Navigation sidebar
 │           ├── AppList.jsx           # App registration CRUD
 │           ├── TestRuns.jsx          # Test run list + creation
-│           ├── BugReports.jsx        # Bug view for a run
-│           └── NewRunModal.jsx       # Modal to trigger a new run
+│           ├── BugReports.jsx        # Run detail: pipeline, live activity, agent logs, bugs
+│           ├── AgentPipelineTracker.jsx  # 5-step agent progress (run + overview modes)
+│           ├── AgentActivityLog.jsx  # Events grouped/filtered by agent
+│           ├── AgentProfiles.jsx     # /agents — cards for each pipeline agent
+│           ├── NewRunModal.jsx       # Modal to trigger a new run
+│           ├── AppHeader.jsx / AppFooter.jsx / UserProfile.jsx / ApiTesting.jsx
+│           └── ...
 │
 ├── database/
 │   ├── migrations/
@@ -156,7 +170,9 @@ bughunter-ai/
 │   │   ├── 002_apps.sql
 │   │   ├── 003_test_runs.sql
 │   │   ├── 004_bug_reports.sql
-│   │   └── 005_not_null_constraints.sql
+│   │   ├── 005_not_null_constraints.sql
+│   │   ├── 006_credentials_text.sql
+│   │   └── 007_app_memory.sql
 │   ├── migrate.sh
 │   └── scripts/
 │       └── re_encrypt_credentials.js # Credential key rotation utility
@@ -285,7 +301,7 @@ Login flow actions: `fill` | `click` | `wait_for_navigation` | `wait_for_selecto
 ### 4.3 `test_runs`
 
 ```sql
-CREATE TYPE run_status AS ENUM ('pending', 'running', 'completed', 'failed');
+CREATE TYPE run_status AS ENUM ('pending', 'running', 'completed', 'failed', 'paused', 'cancelled');
 
 CREATE TABLE test_runs (
   id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -308,7 +324,7 @@ CREATE INDEX idx_test_runs_status  ON test_runs(status);
 | id | UUID | PK |
 | app_id | UUID | FK → apps(id), NOT NULL |
 | user_id | UUID | FK → users(id), NOT NULL |
-| status | run_status ENUM | pending → running → completed/failed |
+| status | run_status ENUM | pending → running → completed / failed / cancelled; paused (mid-run suspension) |
 | started_at | TIMESTAMPTZ | Set when agent picks up job |
 | completed_at | TIMESTAMPTZ | Set on completion/failure |
 | summary | JSONB | `{ total_bugs, pages_explored, screenshots_taken }` |
@@ -521,6 +537,9 @@ Response `200`: `{ "message": "App deleted", "id": "uuid" }`
 | GET | /api/runs/:id | JWT | Get run + its bugs |
 | PATCH | /api/runs/:id | Agent secret | Agent updates run status |
 | DELETE | /api/runs/:id | JWT | Delete run + bugs |
+| POST | /api/runs/:id/stop    | JWT | Stop active run (sets Redis signal, marks cancelled) |
+| POST | /api/runs/:id/pause   | JWT | Pause active run (sets Redis signal, marks paused) |
+| POST | /api/runs/:id/resume  | JWT | Resume paused run (clears Redis signal, marks running) |
 
 ---
 
@@ -588,13 +607,14 @@ Authentication via header: `x-agent-secret: <AGENT_API_SECRET>`
 Request:
 ```json
 {
-  "status": "running" | "completed" | "failed",
+  "status": "running" | "completed" | "failed" | "paused" | "cancelled",
   "summary": { "total_bugs": 5, "pages_explored": 3, "screenshots_taken": 10 },
   "error": "Optional error string"
 }
 ```
 
 Called internally by the Python agent after the LangGraph pipeline completes.
+The persisted `test_runs.summary` JSON (written by the agent via `save_run_to_db`, not only this PATCH) may include: `strategic_plan`, `visited_urls`, `dedupe_stats`, `pipeline_log` — see §7.8.
 
 ---
 
@@ -691,7 +711,7 @@ decrypt(ciphertext) // ciphertext string → JS object
 
 ### 5.5 Queue (`queue/testQueue.js`)
 
-**BullMQ Queue Name:** `test-runs`
+**BullMQ Queue Name:** `bughunter-tests`
 
 **Job options:**
 ```javascript
@@ -704,7 +724,7 @@ decrypt(ciphertext) // ciphertext string → JS object
 
 **`enqueueTestRun(runId, appUrl, credentials, testConfig)`** does two things:
 1. `RPUSH bughunter:jobs <json>` — consumed by Python via BLPOP
-2. `queue.add('run', payload, options)` — BullMQ for monitoring/retries
+2. `queue.add('run-test', payload, options)` — BullMQ for monitoring/retries
 
 ---
 
@@ -751,6 +771,9 @@ decrypt(ciphertext) // ciphertext string → JS object
 | /apps | AppList | Yes |
 | /runs | TestRuns | Yes |
 | /runs/:id | BugReports | Yes |
+| /agents | AgentProfiles | Yes |
+| /apitest | ApiTesting | Yes |
+| /profile | UserProfile | Yes |
 | * | → / redirect | — |
 
 `ProtectedRoute` wrapper checks `user` context; redirects to `/login` if unauthenticated.
@@ -802,6 +825,9 @@ Navigation links:
 - Dashboard (`/`)
 - My Apps (`/apps`)
 - Test Runs (`/runs`)
+- AI Agents (`/agents`) — static agent descriptions + pipeline overview
+- API Testing (`/apitest`)
+- Profile (`/profile`)
 - Logout button
 
 #### `AppList.jsx`
@@ -812,6 +838,7 @@ Navigation links:
   2. **Smart Login (Auto)** — email + password; agent drives login via LLM
   3. **SSO / Multi-Step** — `LoginFlowBuilder` component (manual override)
 - `LoginFlowBuilder` sub-component: dynamically add/remove/reorder login steps; each step has `action`, `selector`, `value`, `timeout` fields
+- **Run** button per app row opens NewRunModal pre-selected with that app
 - Delete app with confirmation
 
 #### `TestRuns.jsx`
@@ -819,25 +846,37 @@ Navigation links:
 - Paginated list of test runs
 - Filter by `app_id` and `status` via query params
 - **New Run** button opens `NewRunModal`
-- Auto-polls every 5 seconds while any run is pending/running
-- Delete run button
+- Auto-polls every 5 seconds while any run is pending/running/paused
+- Active rows (pending/running/paused) show a **Stop** button instead of delete
 
 #### `BugReports.jsx`
 
-- Displays all bugs for a specific run (from `/api/runs/:id`)
+- Loads run + bugs from `GET /api/runs/:id`
+- **Agent pipeline** — `AgentPipelineTracker` (live progress from SSE `agent_start` / `agent_done` with optional `clientTs` on events)
+- **Live Activity / Activity Log** — flat chronological SSE stream (`GET /api/runs/:id/stream?token=…`); events cached in `localStorage` (last 500)
+- **Agent logs** — `AgentActivityLog`: same events grouped by agent phase with filter pills
 - Filter bar: critical / high / medium / low severity buttons
-- `BugCard` sub-component: expandable card showing full bug details (title, description, steps, expected/actual, severity badge, status dropdown, screenshot link)
-- Status dropdown: update bug status inline via `PUT /api/bugs/:id/status`
+- `BugCard` sub-component: expandable card (title, description, steps, severity, status, screenshot)
+- Status updates via `PUT /api/bugs/:id/status`
+- **Stop** button shown for `pending`/`running` runs; **Pause** button for `running` only; **Resume** + **Stop** for `paused`
+- SSE event types handled: `run_stopped`, `run_cancelled`, `run_paused`, `run_resumed`
+
+#### `AgentProfiles.jsx` (`/agents`)
+
+- Static content from `src/data/agentProfiles.js`: pipeline order, capability chips, tools per agent
 
 #### `NewRunModal.jsx`
 
 - Modal overlay
+- Accepts optional `defaultAppId` prop — when passed, that app is pre-selected in the dropdown (used by the **Run** button on `AppList`)
 - Loads app list on mount
 - Select app from dropdown
 - **Test Configuration section:**
   - *What to test* — free-text instructions passed to the agent (e.g. `"Test client listing page — search, filters, pagination"`)
   - *Focus areas* — comma-separated areas to prioritize (e.g. `"authentication, forms"`)
   - *Pages to explore* — range slider 1–20 (default 5)
+  - *Capture login step screenshots* toggle — screenshot after each auto-login step (default **on**)
+  - *Detailed AI report* toggle — AI enriches each bug with structured report; off = **quick mode** (bugs logged directly without LLM enrichment, uses `SimpleReporterAgent`) (default **off**)
 - Optional *Notes* field for run-level record-keeping
 - Sends `test_config` object in `POST /api/runs` body
 - On success, redirects user to `/runs/:newRunId`
@@ -851,13 +890,14 @@ Navigation links:
   plugins: [react()],
   server: {
     proxy: {
-      '/api': { target: 'http://localhost:5000', changeOrigin: true }
+      '/api': { target: 'http://localhost:5000', changeOrigin: true },
+      '/screenshots': { target: 'http://localhost:5000', changeOrigin: true }
     }
   }
 }
 ```
 
-Dev server proxies `/api/*` to backend port 5000.
+Dev server proxies `/api/*` and `/screenshots/*` to backend port 5000.
 
 ---
 
@@ -899,8 +939,11 @@ Reads `LLM_PROVIDER` and `LLM_MODEL` from env. Returns a LangChain `Chat*` model
 | groq | langchain-groq | GROQ_API_KEY | llama-3.3-70b-versatile |
 | mistral | langchain-mistralai | MISTRAL_API_KEY | mistral-large-latest |
 | ollama | langchain-ollama | OLLAMA_BASE_URL | llama3 |
+| claude_cli | subprocess CLI | — | claude-sonnet-4-6 (see `providers.py`) |
 
 Temperature is fixed at 0.2 for consistent, deterministic LLM outputs.
+
+**SSE progress:** `tools/events.publish_event` writes to Redis channel `bughunter:run:{run_id}:progress`; the backend exposes `GET /api/runs/:id/stream` for the frontend.
 
 ---
 
@@ -915,12 +958,17 @@ class AgentState(TypedDict):
     current_page: Optional[str]        # Last visited URL
     screenshots: List[Dict]            # {label, base64, url, timestamp, local_path}
     screenshot_paths: List[str]        # Paths (after base64 stripped)
-    bugs_found: List[Dict]             # Raw bug observations (pre-report)
-    test_steps: List[Dict]             # {action, selector, value, result}
+    bugs_found: List[Dict]             # Raw observations; deduped before reporting
+    test_steps: List[Dict]             # plan, observe, errors_detected, login_*, etc.
     current_agent: Optional[str]       # Active agent name (for tracing)
     error: Optional[str]               # Error message if pipeline fails
     status: str                        # pending | running | completed | failed
     report: Optional[List[Dict]]       # Final structured bug reports
+    app_memory: Optional[Dict]         # Per-app memory from PostgreSQL
+    login_steps_for_memory: Optional[List[Dict]]  # Persisted login flow for next run
+    strategic_plan: Optional[Dict]     # Parsed orchestrator JSON (pages, journeys, focus_areas, notes)
+    visited_urls: Optional[List[str]]  # Explorer URLs — drives SecurityAgent multi-scan
+    dedupe_stats: Optional[Dict]       # {before, after, removed} from ReporterAgent
 ```
 
 **`test_config` shape:**
@@ -939,11 +987,11 @@ class AgentState(TypedDict):
 ```python
 def build_graph() -> CompiledGraph:
     graph = StateGraph(AgentState)
-    graph.add_node("orchestrator", orchestrate_node)
-    graph.add_node("explorer",     explore_node)
-    graph.add_node("validator",    validate_node)
+    graph.add_node("orchestrator", orchestrator_node)
+    graph.add_node("explorer",     explorer_node)
+    graph.add_node("validator",    validator_node)
     graph.add_node("security",     security_node)
-    graph.add_node("reporter",     report_node)
+    graph.add_node("reporter",     reporter_node)
 
     graph.set_entry_point("orchestrator")
     graph.add_edge("orchestrator", "explorer")
@@ -964,13 +1012,13 @@ All edges are **deterministic** — no conditional branching. Every run executes
 Each node is a thin wrapper:
 
 ```python
-def orchestrate_node(state: AgentState) -> AgentState:
+def orchestrator_node(state: AgentState) -> AgentState:
     return OrchestratorAgent().run(state)
 
-def explore_node(state: AgentState) -> AgentState:
+def explorer_node(state: AgentState) -> AgentState:
     return ExplorerAgent().run(state)
 
-# ... same pattern for validate_node, security_node, report_node
+# ... same pattern for validator_node, security_node, reporter_node
 ```
 
 ---
@@ -979,41 +1027,44 @@ def explore_node(state: AgentState) -> AgentState:
 
 #### OrchestratorAgent (`agents/orchestrator.py`)
 
-**Input:** `url`, `credentials`, `test_config`
+**Input:** `url`, `credentials`, `test_config`, `app_memory`
 
 **Process:**
 1. Builds auth context description from credentials shape:
-   - No credentials → "No authentication required"
-   - `{username, password}` → "Smart auto-login with email + password"
+   - No credentials → anonymous testing
+   - `{username, password}` → simple credentials
    - `{login_flow}` → "Multi-step SSO/IDP flow (N steps)"
-2. Incorporates `test_config` into the planning prompt:
-   - `instructions` → appended as "User instructions: ..."
-   - `focus_areas` → appended as "Focus areas: ..."
-   - `max_pages` → appended as "Explorer will visit up to N page(s)"
-3. Calls `get_llm().invoke(prompt)` and receives a structured test strategy
+2. Incorporates `test_config` and **app memory** (known bugs, bug-prone pages) into the planning prompt.
+3. Asks the LLM for **JSON** with keys: `pages`, `user_journeys`, `focus_areas`, `notes` (paths may be relative or absolute).
+4. Parses JSON via `tools/json_utils.extract_json_from_text` into **`strategic_plan`**. On parse failure, stores raw text in `notes`.
 
 **Output mutations:**
-- `test_steps`: Appended with `{ "action": "plan", "result": <llm_response> }`
-- `status`: Set to `"running"`
+- `strategic_plan`: `{ pages, user_journeys, focus_areas, notes }`
+- `test_steps`: `{ "action": "plan", "detail": <raw_llm_text>, "agent": "orchestrator" }`
+- `status`: `"running"`
 
 ---
 
 #### ExplorerAgent (`agents/explorer.py`)
 
-**Input:** `url`, `credentials`, `test_config`, `test_steps` (plan)
+**Input:** `url`, `credentials`, `test_config`, `test_steps` (includes plan step), **`strategic_plan`**
 
 **Process:**
 1. Launches headless Chromium (1280×800 viewport)
 2. Reads `test_config.max_pages` (falls back to `AGENT_MAX_PAGES` env var, default 5)
-3. If credentials provided, selects login strategy:
+3. **URL priority:** Normalizes `strategic_plan.pages` to same-origin absolute URLs, then **merges** with `build_page_priority_list(app_memory)` (historically bug-prone pages). Orchestrator URLs are tried first.
+4. If credentials provided, selects login strategy:
    - **Option A — SSO / Multi-Step** (`credentials.login_flow`): Execute each pre-configured step in sequence. Dismiss overlays before each step. Retry with `force=True` on overlay-blocked clicks.
    - **Option B — Smart Login (Auto)** (`credentials.username` + `credentials.password`): LLM-driven iterative login loop (see below).
 4. Navigate up to `max_pages` pages within the same domain
 5. For each page:
    - Capture full-page screenshot
-   - Ask LLM what to test (incorporating `test_config.instructions` and `test_config.focus_areas`)
+   - Call `inspect_page_structure()` — runs DOM queries via `page.evaluate()` to extract structured data: headings, forms with field labels/types, tables with headers + row count, and key-value pairs
+   - Ask LLM what to test (`_ask_what_to_test(page_structure)`) — prompt now shows structured sections (Page sections, Forms, Data tables, Key data) instead of raw truncated HTML; also includes **`strategic_plan`** (notes, user journeys, orchestrator `focus_areas`) and `test_config.instructions` / `focus_areas`
+   - Append `observe` step (including `"page_structure"` key alongside `detail`, `screenshot_label`, etc.) and (when present) `errors_detected` steps for ValidatorAgent
    - Log console errors and network failures
    - Collect all links for further exploration
+   - Check control signal (`check_run_control`) at the top of each page loop iteration; call `wait_while_paused()` on pause signal
 6. Close browser
 
 **Smart Login loop (Option B):**
@@ -1036,6 +1087,7 @@ The real password is **never sent to the LLM**. Works for:
 - `screenshots`: Array of `{ label, base64, url, timestamp, local_path }`
 - `test_steps`: Navigation steps, per-iteration smart login records, error observations
 - `current_page`: Last URL visited
+- `visited_urls`: Ordered list of URLs visited (used by SecurityAgent)
 
 ---
 
@@ -1064,49 +1116,13 @@ The real password is **never sent to the LLM**. Works for:
 
 #### SecurityAgent (`agents/security.py`)
 
-**Input:** `url`, `screenshots`, `test_steps`
+**Input:** `url`, **`visited_urls`** (from Explorer)
 
-**Tests performed:**
+**Target URLs:** Deduped list of `url` plus `visited_urls`, capped by **`SECURITY_MAX_URLS`** (default `6`; set in `agent/.env`).
 
-**1. XSS Injection (`_test_xss`)**
+**Per URL:** One browser session runs XSS probes, then SQLi probes, then a regex **secret** scan on the final HTML. First 3 form inputs; 2 XSS payloads and 2 SQLi payloads per input (same payload sets as before).
 
-Payloads (5 total, 2 tested per input):
-```python
-"<script>alert('XSS')</script>"
-'"><script>alert(1)</script>'
-"javascript:alert(1)"
-"<img src=x onerror=alert(1)>"
-"';alert(1)//"
-```
-
-- Tests first 3 form inputs on the page
-- Checks if payload appears unescaped in response HTML
-
-**2. SQL Injection (`_test_sqli`)**
-
-Payloads (5 total, 2 tested per input):
-```python
-"' OR '1'='1"
-"' OR 1=1--"
-'" OR ""="'
-"1; DROP TABLE users--"
-"admin'--"
-```
-
-- Tests first 3 form inputs
-- Checks page source for SQL error signatures: `SQL syntax`, `mysql_fetch`, `ORA-`, `syntax error`
-
-**3. Exposed Secrets (`_check_exposed_secrets`)**
-
-Regex patterns checked against page source:
-```python
-r"(?i)(api[_-]?key|apikey)\s*[=:]\s*['\"]?[\w\-]{16,}"
-r"(?i)(secret[_-]?key|secretkey)\s*[=:]\s*['\"]?[\w\-]{16,}"
-r"(?i)(password|passwd|pwd)\s*[=:]\s*['\"]?\w{6,}"
-r"(?i)aws[_-]?(access[_-]?key|secret)\s*[=:]\s*['\"]?[\w/+=]{16,}"
-```
-
-All security bugs are marked `severity: "critical"`.
+**Secret findings:** Severity **`high`** (not critical) with copy noting possible false positives.
 
 **Output mutations:**
 - `bugs_found`: Appended with security findings
@@ -1115,10 +1131,11 @@ All security bugs are marked `severity: "critical"`.
 
 #### ReporterAgent (`agents/reporter.py`)
 
-**Input:** `bugs_found`, `url`
+**Input:** `bugs_found`, `app_memory` (for regression fingerprints)
 
 **Process:**
-1. For each entry in `bugs_found`, calls LLM with a structured prompt
+1. **`dedupe_bugs`** (`tools/bug_dedupe.py`) — removes duplicate observations by `make_fingerprint(title, page_url)`; records **`dedupe_stats`** `{ before, after, removed }`.
+2. For each remaining entry, calls LLM with a structured prompt
 2. LLM returns a fully structured bug report with:
    - `title` — concise bug title
    - `description` — full description
@@ -1131,7 +1148,9 @@ All security bugs are marked `severity: "critical"`.
 3. Builds final `report` list
 
 **Output mutations:**
+- `bugs_found`: Replaced with deduped list (aligned with reports)
 - `report`: Final list of structured bug report dicts
+- `dedupe_stats`: Deduplication counts
 - `status`: Set to `"completed"`
 
 ---
@@ -1159,9 +1178,14 @@ class JobRunner:
         try:
             initial_state = self._build_state(job)
             final_state = self.graph.invoke(initial_state)
-            save_run_to_db(job['run_id'], 'completed', final_state)
+            # Determine final status: cancelled if a stop signal was set, otherwise completed
+            was_stopped = check_run_control(job['run_id']) == SIGNAL_STOP
+            final_status = 'cancelled' if was_stopped else 'completed'
+            save_run_to_db(job['run_id'], final_status, final_state)
         except Exception as exc:
             save_run_to_db(job['run_id'], 'failed', {'error': str(exc)})
+        finally:
+            clear_run_control(job['run_id'])  # Always clear the control key
 
     def _update_run_status(self, run_id, status):
         # PATCH /api/runs/:id with x-agent-secret header
@@ -1180,8 +1204,13 @@ class JobRunner:
             'test_steps': [],
             'current_agent': None,
             'error': None,
-            'status': 'pending',
+            'status': 'running',
             'report': None,
+            'app_memory': load_memory(app_id) if app_id else {},
+            'login_steps_for_memory': None,
+            'strategic_plan': None,
+            'visited_urls': None,
+            'dedupe_stats': None,
         }
 ```
 
@@ -1223,6 +1252,7 @@ Synchronous Playwright wrapper using `sync_playwright()`.
 | `get_title()` | Return page title |
 | `get_all_links()` | Return all `<a href>` targets |
 | `get_form_inputs()` | Return CSS selectors of form inputs |
+| `inspect_page_structure()` | Return structured page data: headings, forms with field labels/types, tables with headers + row count, key-value pairs. Runs DOM queries via `page.evaluate()` |
 | `get_console_errors()` | Return JS console error messages |
 | `get_network_errors()` | Return failed network request URLs |
 | `close()` | Close browser and Playwright context |
@@ -1233,6 +1263,24 @@ Synchronous Playwright wrapper using `sync_playwright()`.
 - `[class*='consent'] button`
 - `[class*='modal'] button[class*='close']`
 - `button[aria-label='Close']`
+
+---
+
+#### `tools/control.py` — Run Control Signals
+
+Redis-based mechanism for stopping or pausing active runs.
+
+**Key:** `bughunter:control:{run_id}` — set by the backend; TTL 1 hour.
+
+**Values:** `"stop"` | `"pause"`
+
+| Function | Description |
+|---|---|
+| `check_run_control(run_id)` | Returns current signal string or `None` |
+| `wait_while_paused(run_id)` | Blocks until signal is no longer `"pause"`; returns `True` if stopped while waiting |
+| `clear_run_control(run_id)` | Deletes the key (called in `finally` block of `runner.poll()`) |
+
+All five agents check the stop signal at entry and return early if stopped. ExplorerAgent additionally checks at the top of every page loop iteration and calls `wait_while_paused()` on pause.
 
 ---
 
@@ -1256,6 +1304,12 @@ def upload_to_s3(image_data, run_id: str, label: str) -> Optional[str]
 
 ---
 
+#### `tools/bug_dedupe.py` / `tools/pipeline_log.py` / `tools/json_utils.py`
+
+- **`dedupe_bugs(bugs)`** — fingerprint-based deduplication before ReporterAgent LLM calls.
+- **`build_pipeline_log(test_steps)`** — compact step timeline stored in `test_runs.summary`.
+- **`extract_json_from_text(text)`** — used by OrchestratorAgent to parse strategic JSON.
+
 #### `tools/storage.py`
 
 ```python
@@ -1268,14 +1322,20 @@ Uses `psycopg2.pool.ThreadedConnectionPool` (min=1, max=5).
 
 1. `UPDATE test_runs SET status=..., completed_at=NOW(), summary=..., error=... WHERE id=...`
 
-   Summary JSONB:
+   Summary JSONB (extended):
    ```json
    {
-     "total_bugs": <len(report)>,
-     "pages_explored": <unique urls in test_steps>,
-     "screenshots_taken": <len(screenshots)>
+     "total_bugs": <len(bugs_found after dedupe)>,
+     "pages_explored": <unique pages from screenshots>,
+     "screenshots_taken": <len(screenshots)>,
+     "pages_visited": [ ... ],
+     "strategic_plan": { "pages": [], "user_journeys": [], "focus_areas": "", "notes": "" },
+     "visited_urls": [ "https://..." ],
+     "dedupe_stats": { "before": 12, "after": 9, "removed": 3 },
+     "pipeline_log": [ { "agent": "explorer", "action": "observe", "url": "..." } ]
    }
    ```
+   `pipeline_log` is produced by `tools/pipeline_log.build_pipeline_log(test_steps)` (truncated list for tuning/debugging).
 
 2. For each item in `results['report']`:
    ```sql
@@ -1372,6 +1432,7 @@ Python runner.poll()
 | BACKEND_URL | Yes | http://localhost:5000 | Backend base URL |
 | AGENT_API_SECRET | Yes | — | Shared secret for PATCH /api/runs |
 | AGENT_MAX_PAGES | No | 5 | Default max pages per run (overridable per-run via `test_config.max_pages`) |
+| SECURITY_MAX_URLS | No | 6 | Max URLs for XSS/SQLi/secret scans (seed + explorer `visited_urls`) |
 | AWS_ACCESS_KEY_ID | No | — | S3 screenshot upload |
 | AWS_SECRET_ACCESS_KEY | No | — | S3 screenshot upload |
 | S3_BUCKET | No | — | S3 bucket name |
@@ -1479,7 +1540,9 @@ psql postgresql://postgres:postgres@localhost:5432/bughunter \
   -f database/migrations/002_apps.sql \
   -f database/migrations/003_test_runs.sql \
   -f database/migrations/004_bug_reports.sql \
-  -f database/migrations/005_not_null_constraints.sql
+  -f database/migrations/005_not_null_constraints.sql \
+  -f database/migrations/006_credentials_text.sql \
+  -f database/migrations/007_app_memory.sql
 
 # 3. Backend
 cd backend && npm install
@@ -1519,4 +1582,4 @@ Convenience script that launches all three services in separate PowerShell windo
 
 ---
 
-*This document was auto-generated from the BugHunter.AI source code on 2026-03-26.*
+*Document maintained against the BugHunter.AI source code. Last updated: 2026-03-29.*

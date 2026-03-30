@@ -8,6 +8,9 @@ import {
   deleteRun,
   getRun,
   listRuns,
+  pauseRun,
+  resumeRun,
+  stopRun,
   updateRun,
 } from '../controllers/runs.controller.js';
 import { query } from '../config/db.js';
@@ -28,21 +31,23 @@ const createRunSchema = z.object({
   app_id: z.string().uuid('Must be a valid app UUID'),
   notes: z.string().optional(),
   test_config: z.object({
-    max_pages:    z.number().int().min(1).max(20).optional(),
-    instructions: z.string().optional(),
-    focus_areas:  z.string().optional(),
+    max_pages:              z.number().int().min(1).max(20).optional(),
+    instructions:           z.string().optional(),
+    focus_areas:            z.string().optional(),
+    screenshot_login_steps: z.boolean().optional(),
+    detailed_report:        z.boolean().optional(),
   }).optional(),
 });
 
 const listRunsQuerySchema = z.object({
   app_id: z.string().uuid().optional(),
-  status: z.enum(['pending', 'running', 'completed', 'failed']).optional(),
+  status: z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'paused']).optional(),
   page:  z.coerce.number().int().positive().default(1),
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
 const updateRunSchema = z.object({
-  status:  z.enum(['pending', 'running', 'completed', 'failed']),
+  status:  z.enum(['pending', 'running', 'completed', 'failed', 'cancelled', 'paused']),
   summary: z.record(z.unknown()).optional(),
   error:   z.string().optional(),
 });
@@ -112,6 +117,9 @@ router.get('/', validateQuery(listRunsQuerySchema), listRuns);
 router.post('/', validate(createRunSchema), createRun);
 router.get('/:id', getRun);
 router.delete('/:id', deleteRun);
+router.post('/:id/stop', stopRun);
+router.post('/:id/pause', pauseRun);
+router.post('/:id/resume', resumeRun);
 
 /**
  * POST /api/runs/:id/generate-tests

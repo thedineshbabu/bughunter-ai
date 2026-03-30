@@ -49,16 +49,13 @@ BugHunter.AI is a fully automated bug-detection platform that deploys a multi-ag
 
 ### Agent Flow
 
+All five agents run in a **fixed linear order** (no branching on bug count):
+
 ```
-orchestrator ──▶ explorer ──▶ validator ──▶ [has_bugs?]
-                                                │
-                              ┌─────────────────┴──────────────────┐
-                              ▼ yes                                  ▼ no
-                           reporter ◀────── security ◀──────────────┘
-                              │
-                              ▼
-                             END
+orchestrator ──▶ explorer ──▶ validator ──▶ security ──▶ reporter ──▶ END
 ```
+
+The orchestrator emits a **strategic plan** (JSON: pages, journeys, focus areas) that the Explorer uses for URL priority and LLM prompts. The Explorer records **visited URLs**; Security runs XSS/SQLi/secret checks across those URLs (capped). The Reporter **deduplicates** raw findings before generating structured reports.
 
 ---
 
@@ -74,6 +71,16 @@ orchestrator ──▶ explorer ──▶ validator ──▶ [has_bugs?]
 | Queue       | Redis 7 + BullMQ                                                  |
 | Storage     | AWS S3 (screenshots)                                              |
 | Auth        | JWT (bcrypt + jsonwebtoken)                                       |
+
+---
+
+## 📚 Documentation
+
+| Document | Contents |
+|----------|----------|
+| [documents/TECHNICAL_SPEC.md](documents/TECHNICAL_SPEC.md) | Full system spec: frontend routes, agent pipeline, DB summary fields, env vars |
+| [docs/testing-guide.md](docs/testing-guide.md) | End-to-end: register apps, run tests, interpret the UI |
+| [CLAUDE.md](CLAUDE.md) | Short architecture reference for AI-assisted development |
 
 ---
 
@@ -291,19 +298,19 @@ Since these are branching flows, register the app **twice** — once for each us
 ## 🤖 Agent Descriptions
 
 ### OrchestratorAgent
-Analyzes the target app URL, plans the testing strategy, identifies key user flows, and initializes the state for downstream agents. Uses the configured LLM to generate a structured test plan.
+Analyzes the target URL, credentials, app memory, and `test_config`. Produces **JSON** (`pages`, `user_journeys`, `focus_areas`, `notes`) stored as **`strategic_plan`** and used by the Explorer for URL priority and prompts.
 
 ### ExplorerAgent
-Uses Playwright to navigate the web application with `domcontentloaded` wait strategy for reliable page loading. At each page, it takes a screenshot, asks the LLM what to test, performs actions (clicks, form fills, navigation), captures console/network errors, and logs all steps. Explores up to 5 pages per run.
+Playwright navigation (`domcontentloaded`). Merges **strategic plan URLs** with memory-driven bug-prone pages. Per page: screenshot, LLM “what to test” (plan-aware), `observe` / `errors_detected` steps. Records **`visited_urls`** for Security. Page cap: `AGENT_MAX_PAGES` / `test_config.max_pages` (default 5).
 
 ### ValidatorAgent
-Reviews screenshots and interaction logs. Asks the LLM to identify bugs including 404s, broken layouts, JavaScript errors, incorrect data display, and failed form validations.
+Iterates `test_steps` with `action` in `observe` or `errors_detected` and asks the LLM to list functional/UI/data issues. Strips screenshot `base64` from state after validation.
 
 ### SecurityAgent
-Performs active security testing: XSS injection (5 payloads), SQL injection attempts (5 payloads), authentication bypass tests, and source code inspection for exposed secrets (API keys, passwords, AWS credentials).
+Runs XSS/SQLi/secret scans on the **seed URL plus `visited_urls`**, deduped and capped by **`SECURITY_MAX_URLS`** (default 6). One browser session per target URL.
 
 ### ReporterAgent
-Takes the `bugs_found` list and uses the LLM to generate structured bug reports with title, description, reproduction steps, expected/actual behavior, and severity classification (critical/high/medium/low).
+**Deduplicates** raw `bugs_found` by fingerprint, then uses the LLM to produce structured reports (title, description, steps, severity, regression vs app memory).
 
 ---
 

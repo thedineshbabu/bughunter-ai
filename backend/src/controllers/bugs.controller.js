@@ -4,12 +4,13 @@ import { query } from '../config/db.js';
 export async function listBugs(req, res, next) {
   try {
     // page and limit are already coerced integers from validateQuery middleware
-    const { run_id, severity, status, page = 1, limit = 20 } = req.query;
+    const { run_id, app_id, severity, status, page = 1, limit = 20 } = req.query;
     const offset = (page - 1) * limit;
 
     const baseWhere = `
       FROM bug_reports b
       JOIN test_runs r ON b.run_id = r.id
+      LEFT JOIN apps a ON b.app_id = a.id
       WHERE r.user_id = $1
     `;
     const params = [req.user.id];
@@ -17,12 +18,13 @@ export async function listBugs(req, res, next) {
     let filters = '';
 
     if (run_id)   { filters += ` AND b.run_id = $${idx++}`;   params.push(run_id); }
+    if (app_id)  { filters += ` AND b.app_id = $${idx++}`;   params.push(app_id); }
     if (severity) { filters += ` AND b.severity = $${idx++}`; params.push(severity); }
     if (status)   { filters += ` AND b.status = $${idx++}`;   params.push(status); }
 
     const countResult = await query(`SELECT COUNT(*) ${baseWhere}${filters}`, params);
 
-    const sql = `SELECT b.* ${baseWhere}${filters} ORDER BY b.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
+    const sql = `SELECT b.*, a.name AS app_name ${baseWhere}${filters} ORDER BY b.created_at DESC LIMIT $${idx++} OFFSET $${idx++}`;
     params.push(limit, offset);
 
     const result = await query(sql, params);

@@ -36,20 +36,27 @@ Frontend → Backend API → Redis Queue (BullMQ + raw list)
                         Python Worker (main.py)
                                 ↓
                         LangGraph Agent Pipeline
-                        (orchestrator → explorer → validator → [security/reporter])
+                        (orchestrator → explorer → validator → security → reporter)
                                 ↓
-                        PostgreSQL (bugs_found, screenshots, reports)
+                        PostgreSQL (test_runs.summary JSON, bug_reports, app_memory)
                                 ↓
                         Backend API → Frontend (user views results)
 ```
 
 ### Agent Pipeline Flow
 
-- **OrchestratorAgent**: Analyzes target URL, plans test strategy
-- **ExplorerAgent**: Uses Playwright to navigate the app, takes screenshots
-- **ValidatorAgent**: Reviews screenshots/logs to find functional bugs
-- **SecurityAgent**: Runs active security tests (XSS, SQL injection, auth bypass)
-- **ReporterAgent**: Structures bug findings into reports
+Linear pipeline — every run executes all five agents in order.
+
+- **OrchestratorAgent**: LLM produces JSON strategic plan (`strategic_plan`); parsed via `tools/json_utils.py`
+- **ExplorerAgent**: Playwright exploration; merges plan URLs with memory priority list; sets `visited_urls`; `observe` / `errors_detected` steps for Validator
+- **ValidatorAgent**: LLM on `observe` / `errors_detected` steps; strips screenshot base64 after run
+- **SecurityAgent**: XSS/SQLi/secret scans on seed URL + `visited_urls` (see `SECURITY_MAX_URLS`)
+- **ReporterAgent**: `tools/bug_dedupe.dedupe_bugs` then LLM structured reports; `dedupe_stats` on state
+
+### Frontend (high level)
+
+- Run detail (`BugReports.jsx`): SSE live activity, `AgentPipelineTracker`, `AgentActivityLog`
+- Static `/agents` page: `AgentProfiles.jsx` + `data/agentProfiles.js`
 
 ---
 

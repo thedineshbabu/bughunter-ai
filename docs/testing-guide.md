@@ -139,6 +139,8 @@ If Smart Login fails, switch to **SSO / Multi-Step** and define each step explic
 | **Focus areas** | Areas to prioritize | `authentication, forms, navigation` |
 | **Pages to explore** | Slider 1–20 (default 5) | `10` for deeper coverage |
 | **Notes** | Run-level notes for your records | `Post-deployment smoke test` |
+| **Capture login screenshots** | Toggle — screenshot after each auto-login step | Default: on |
+| **Detailed AI report** | Toggle — AI enriches each bug with structured report. Off = quick mode (bugs logged instantly, no LLM enrichment) | Default: **off** |
 
 5. Click **Start Test Run**
 
@@ -146,23 +148,29 @@ You are redirected to the Bug Reports page for that run where you can watch resu
 
 > **Tip:** More pages = deeper coverage but longer run time. For a quick smoke test use 3–5 pages; for thorough coverage use 10–15.
 
+> **Quick mode** (Detailed AI report off) is faster — bugs are logged without LLM enrichment. Enable for thorough analysis when you want structured steps-to-reproduce.
+
+> **Note:** You can also start a run directly from the **Applications** page — click the **Run** button on any app row to open the modal pre-configured for that app.
+
 ---
 
 ## Step 4 — What the Agent Does
 
-Once a run starts, the LangGraph agent pipeline executes automatically:
+Once a run starts, the LangGraph agent pipeline executes automatically (fixed order, no branching):
 
 ```
-OrchestratorAgent  →  plans which pages and flows to test
+OrchestratorAgent  →  LLM JSON plan (pages, journeys, focus) — drives Explorer priorities
        ↓
-ExplorerAgent      →  navigates the site using Playwright, takes screenshots
+ExplorerAgent      →  Playwright navigation, screenshots, console/network errors; records visited URLs
        ↓
-ValidatorAgent     →  analyzes screenshots with LLM vision for functional bugs
+ValidatorAgent     →  LLM review of `observe` / `errors_detected` steps for functional issues
        ↓
-SecurityAgent      →  runs active tests: XSS payloads, SQL injection, auth bypass, secret scanning
+SecurityAgent      →  XSS / SQLi / secret patterns on the seed URL + visited URLs (capped)
        ↓
-ReporterAgent      →  structures all findings into bug reports saved to the database
+ReporterAgent      →  deduplicates raw findings, then LLM structured bug reports to PostgreSQL
 ```
+
+The run’s **summary** JSON in PostgreSQL can include `strategic_plan`, `visited_urls`, `dedupe_stats`, and `pipeline_log` for debugging and tuning.
 
 **Run status values:**
 
@@ -172,6 +180,24 @@ ReporterAgent      →  structures all findings into bug reports saved to the da
 | `running` | Agent is actively exploring and testing |
 | `completed` | All agents finished; bug reports are ready |
 | `failed` | An error occurred — check `logs/agent.log` |
+| `paused` | Run is suspended — agent is waiting for resume signal |
+| `cancelled` | Run was stopped mid-run — partial results saved |
+
+---
+
+## Stopping and Pausing a Run
+
+You can control an active run from the run detail page or the Test Runs list.
+
+| Control | Where available | Effect |
+|---------|----------------|--------|
+| **Stop** | Run detail + Test Runs list | Immediately signals the agent to stop. The run is marked `cancelled` and any bugs found so far are saved. |
+| **Pause** | Run detail only (when `running`) | Signals the agent to pause after the current page. The run is marked `paused`. |
+| **Resume** | Run detail only (when `paused`) | Clears the pause signal; run continues from where it left off. |
+
+**How it works:** The backend sets a Redis key (`bughunter:control:{run_id}`). The agent checks this key at the start of each page and before each pipeline stage. On stop, partial bug results are saved to the database.
+
+> **Note:** Stopping a run does not discard findings — bugs found up to the stop point are preserved and visible on the run detail page.
 
 ---
 
@@ -181,13 +207,19 @@ After the run completes:
 
 1. Go to **Test Runs** in the sidebar
 2. Click on the completed run
-3. Each bug report shows:
+3. On the run detail page you can use:
+   - **Agent pipeline** — live stepper for Orchestrator → Explorer → Validator → Security → Reporter
+   - **Live Activity** — flat SSE event stream (and retained log after completion)
+   - **Agent logs** — the same events grouped by agent with filters
+4. Each bug report shows:
    - **Title** — brief description of the issue
    - **Severity** — `critical`, `high`, `medium`, `low`, or `info`
    - **Status** — `open`, `confirmed`, or `false_positive`
    - **Page URL** — the exact URL where the bug was found
    - **Description** — detailed LLM analysis of the issue
    - **Screenshot** — visual evidence captured by Playwright
+
+To read static descriptions of each agent and the pipeline order, open **AI Agents** in the sidebar (`/agents`).
 
 ---
 
@@ -256,6 +288,7 @@ The image may still be pulling on first run. Wait 60 seconds and retry.
 - **DVWA Low difficulty** produces the most findings as security controls are disabled
 - **Juice Shop** has over 100 challenges — each run will likely surface different issues
 - **Enterprise apps**: register once per user type (SSO user / non-SSO user) with their respective credentials
+- **Quick mode** is the default — enable "Detailed AI report" only when you need structured steps-to-reproduce per bug (it adds LLM enrichment time)
 
 ---
 

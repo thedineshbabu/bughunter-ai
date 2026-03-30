@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { formatDistanceToNow, format } from 'date-fns';
 import api from '../services/api.js';
+import { EVENT_CONFIG } from '../data/liveEventConfig.js';
+import AgentPipelineTracker from './AgentPipelineTracker.jsx';
+import AgentActivityLog from './AgentActivityLog.jsx';
 
-const ACTIVE_STATUSES = new Set(['pending', 'running']);
+const ACTIVE_STATUSES = new Set(['pending', 'running', 'paused']);
 
 const SEVERITY_CONFIG = {
   critical: { bg: 'var(--error-container)', color: 'var(--error)',                rail: 'var(--error)',                icon: 'crisis_alert' },
@@ -13,19 +16,10 @@ const SEVERITY_CONFIG = {
 };
 
 const STATUS_CONFIG = {
-  open:      { bg: 'rgba(0,88,190,0.08)', color: 'var(--secondary)' },
+  open:      { bg: 'var(--secondary-soft)', color: 'var(--secondary)' },
   confirmed: { bg: '#ede9fe',             color: '#5b21b6' },
   fixed:     { bg: '#f0fdf4',             color: '#16a34a' },
   wontfix:   { bg: 'var(--surface-container-high)', color: 'var(--on-surface-variant)' },
-};
-
-const EVENT_CONFIG = {
-  agent_start:  { color: 'var(--secondary)', icon: 'play_circle' },
-  agent_done:   { color: '#16a34a',          icon: 'check_circle' },
-  page_visited: { color: 'var(--outline)',   icon: 'travel_explore' },
-  bug_found:    { color: 'var(--error)',     icon: 'bug_report' },
-  run_complete: { color: '#16a34a',          icon: 'verified' },
-  run_failed:   { color: 'var(--error)',     icon: 'error' },
 };
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -119,20 +113,26 @@ function RunOverviewCard({ run, bugs }) {
   const sevCounts = { critical: 0, high: 0, medium: 0, low: 0 };
   bugs.forEach(b => { if (sevCounts[b.severity] !== undefined) sevCounts[b.severity]++; });
   const dur = duration(run.started_at, run.completed_at);
-  const isCompleted = run.status === 'completed';
-  const isFailed    = run.status === 'failed';
-  const isActive    = ACTIVE_STATUSES.has(run.status);
+  const isCompleted  = run.status === 'completed';
+  const isFailed     = run.status === 'failed';
+  const isCancelled  = run.status === 'cancelled';
+  const isPaused     = run.status === 'paused';
+  const isActive     = ACTIVE_STATUSES.has(run.status);
 
   const statusStyle = isCompleted
-    ? { bg: '#f0fdf4', color: '#16a34a', icon: 'verified', label: 'Completed' }
+    ? { bg: '#f0fdf4',                   color: '#16a34a',        icon: 'verified',     label: 'Completed',  bar: '#22c55e' }
     : isFailed
-    ? { bg: 'var(--error-container)', color: 'var(--error)', icon: 'error', label: 'Failed' }
-    : { bg: 'rgba(0,88,190,0.08)', color: 'var(--secondary)', icon: 'autorenew', label: run.status.toUpperCase() };
+    ? { bg: 'var(--error-container)',     color: 'var(--error)',   icon: 'error',        label: 'Failed',     bar: 'var(--error)' }
+    : isCancelled
+    ? { bg: '#fef3c7',                   color: '#92400e',        icon: 'stop_circle',  label: 'Cancelled',  bar: '#d97706' }
+    : isPaused
+    ? { bg: '#ede9fe',                   color: '#5b21b6',        icon: 'pause_circle', label: 'Paused',     bar: '#7c3aed' }
+    : { bg: 'var(--secondary-soft)',      color: 'var(--secondary)', icon: 'autorenew', label: 'Running…',   bar: 'var(--secondary)' };
 
   return (
     <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '12px', marginBottom: '1.5rem', overflow: 'hidden', border: '1px solid rgba(197,198,207,0.15)' }}>
       {/* Status bar */}
-      <div style={{ height: '4px', background: isCompleted ? '#22c55e' : isFailed ? 'var(--error)' : 'var(--secondary)' }} />
+      <div style={{ height: '4px', background: statusStyle.bar }} />
 
       <div style={{ padding: '1.25rem 1.5rem' }}>
         {/* Top row */}
@@ -197,12 +197,16 @@ function PagesExplored({ summary, accentColor = '#16a34a' }) {
   if (pages.length === 0) return null;
 
   const ACTION_LABELS = {
-    observe:                'Analysed page for test opportunities',
-    login_attempt:          'Attempted login',
-    login_flow_completed:   'Login flow completed',
-    login_flow_failed:      'Login flow failed',
-    errors_detected:        'Console / network errors detected',
-    error:                  'Error encountered',
+    observe:                  'Analysed page for test opportunities',
+    login_attempt:            'Attempted login',
+    login_flow_completed:     'Login flow completed',
+    login_flow_failed:        'Login flow failed',
+    smart_login_completed:    'Smart login succeeded',
+    smart_login_partial:      'Smart login reached max steps',
+    smart_login_failed:       'Smart login failed',
+    memory_login_completed:   'Memory-based login succeeded (stored steps)',
+    errors_detected:          'Console / network errors detected',
+    error:                    'Error encountered',
   };
 
   return (
@@ -251,6 +255,29 @@ function PagesExplored({ summary, accentColor = '#16a34a' }) {
                       onClick={e => e.stopPropagation()}
                       style={{ color: accentColor, textDecoration: 'none' }}>{page.url}</a>
                   </div>
+                  {/* Metric chips */}
+                  <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginTop: '4px' }}>
+                    {page.load_time_ms > 0 && (
+                      <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px',
+                        background: page.load_time_ms > 3000 ? '#ffedd5' : '#f0fdf4',
+                        color: page.load_time_ms > 3000 ? '#9a3412' : '#15803d', fontWeight: 600 }}>
+                        ⏱ {page.load_time_ms}ms
+                      </span>
+                    )}
+                    {page.links_found > 0 && (
+                      <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px',
+                        background: 'var(--surface-container-low)', color: 'var(--on-surface-variant)', fontWeight: 600 }}>
+                        🔗 {page.links_found} links
+                      </span>
+                    )}
+                    {page.api_call_count > 0 && (
+                      <span style={{ fontSize: '10px', padding: '1px 7px', borderRadius: '999px',
+                        background: page.api_error_count > 0 ? 'var(--error-container)' : 'var(--surface-container-low)',
+                        color: page.api_error_count > 0 ? 'var(--error)' : 'var(--on-surface-variant)', fontWeight: 600 }}>
+                        {page.api_error_count > 0 ? `⚠ ${page.api_error_count} API errors` : `⚡ ${page.api_call_count} API calls`}
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <span className="material-symbols-outlined" style={{ color: 'var(--outline)', fontSize: '18px', flexShrink: 0 }}>
@@ -269,6 +296,39 @@ function PagesExplored({ summary, accentColor = '#16a34a' }) {
                     </div>
                   )}
 
+                  {page.login_steps?.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#92400e', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>key</span>
+                        Login Steps ({page.login_steps.length})
+                      </div>
+                      <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '4px' }}>
+                        {page.login_steps.map((ls, li) => {
+                          const src = ls.screenshot_file ? `/screenshots/${ls.screenshot_file}` : null;
+                          return (
+                            <div key={li} style={{ flexShrink: 0, width: '140px' }}>
+                              {src ? (
+                                <div onClick={() => setLightbox({ src, label: `Login step ${ls.step}: ${ls.action}` })}
+                                  style={{ cursor: 'zoom-in', borderRadius: '6px', overflow: 'hidden', border: '1px solid #fde68a', marginBottom: '5px', height: '88px', background: 'var(--surface-container-low)', position: 'relative' }}>
+                                  <img src={src} alt={`step ${ls.step}`} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                                  <div style={{ position: 'absolute', top: '4px', left: '4px', background: '#92400e', color: '#fff', borderRadius: '3px', padding: '1px 5px', fontSize: '10px', fontWeight: 700 }}>
+                                    {ls.step}
+                                  </div>
+                                </div>
+                              ) : (
+                                <div style={{ borderRadius: '6px', border: '1px dashed #fde68a', marginBottom: '5px', height: '88px', background: 'var(--surface-container-low)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                  <span className="material-symbols-outlined" style={{ fontSize: '20px', color: 'var(--outline-variant)' }}>image_not_supported</span>
+                                </div>
+                              )}
+                              <div style={{ fontSize: '0.68rem', color: '#92400e', fontWeight: 600, textTransform: 'capitalize' }}>{ls.action}</div>
+                              <div style={{ fontSize: '0.65rem', color: 'var(--outline)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'monospace' }}>{ls.selector}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {page.steps?.length > 0 && (
                     <div style={{ marginTop: '12px' }}>
                       <div style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--on-surface-variant)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px' }}>
@@ -277,8 +337,8 @@ function PagesExplored({ summary, accentColor = '#16a34a' }) {
                       <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                         {page.steps.map((step, si) => (
                           <div key={si} style={{ display: 'flex', gap: '8px', fontSize: '0.8rem', alignItems: 'flex-start' }}>
-                            <span className="material-symbols-outlined" style={{ fontSize: '14px', color: step.action === 'error' || step.action === 'login_flow_failed' ? 'var(--error)' : accentColor, flexShrink: 0, marginTop: '1px' }}>
-                              {step.action === 'observe' ? 'search' : step.action.includes('login') ? 'key' : step.action === 'errors_detected' ? 'warning' : 'info'}
+                            <span className="material-symbols-outlined" style={{ fontSize: '14px', color: step.action === 'error' || step.action?.includes('failed') ? 'var(--error)' : accentColor, flexShrink: 0, marginTop: '1px' }}>
+                              {step.action === 'observe' ? 'search' : step.action?.includes('login') ? 'key' : step.action === 'errors_detected' ? 'warning' : 'info'}
                             </span>
                             <div>
                               <span style={{ fontWeight: 500, color: 'var(--on-surface)' }}>{ACTION_LABELS[step.action] || step.action}</span>
@@ -299,6 +359,75 @@ function PagesExplored({ summary, accentColor = '#16a34a' }) {
       </div>
 
       {lightbox && <Lightbox src={lightbox.src} label={lightbox.label} onClose={() => setLightbox(null)} />}
+    </div>
+  );
+}
+
+// ─── Test Execution Summary ───────────────────────────────────────────────────
+
+function TestExecutionSummary({ run }) {
+  const summary = run.summary || {};
+  const plan = summary.strategic_plan || {};
+  const plannedPages = (plan.pages || []).length;
+  const testedPages  = summary.pages_explored || 0;
+  const suggestions  = summary.improvement_suggestions || [];
+
+  if (!testedPages) return null;
+
+  const stats = [
+    { label: 'Pages Planned', value: plannedPages || '—', icon: 'map' },
+    { label: 'Pages Tested',  value: testedPages,          icon: 'travel_explore' },
+    { label: 'Avg Load Time', value: summary.avg_load_time_ms ? `${summary.avg_load_time_ms}ms` : '—', icon: 'timer' },
+    { label: 'Links Found',   value: summary.total_links_found ?? '—', icon: 'link' },
+    { label: 'API Calls',     value: summary.total_api_calls ?? '—', icon: 'cloud' },
+    { label: 'API Errors',    value: summary.api_error_count ?? '—', icon: 'error_outline', highlight: summary.api_error_count > 0 },
+  ];
+
+  return (
+    <div style={{ marginBottom: '1.5rem', background: 'var(--surface-container-lowest)',
+      border: '1px solid rgba(197,198,207,0.15)', borderRadius: '12px', overflow: 'hidden' }}>
+      <div style={{ padding: '10px 14px', borderBottom: '1px solid var(--surface-container-low)',
+        fontSize: '0.7rem', fontWeight: 700, color: 'var(--on-surface-variant)',
+        textTransform: 'uppercase', letterSpacing: '0.08em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+        <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>analytics</span>
+        Test Execution Summary
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: '1px',
+        background: 'var(--surface-container-low)' }}>
+        {stats.map(({ label, value, icon, highlight }) => (
+          <div key={label} style={{ padding: '12px 14px', background: 'var(--surface-container-lowest)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+              <span className="material-symbols-outlined"
+                style={{ fontSize: '13px', color: highlight ? 'var(--error)' : 'var(--on-surface-variant)' }}>{icon}</span>
+              <span style={{ fontSize: '10px', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em',
+                color: highlight ? 'var(--error)' : 'var(--on-surface-variant)' }}>{label}</span>
+            </div>
+            <div style={{ fontSize: '1.1rem', fontWeight: 700,
+              color: highlight ? 'var(--error)' : 'var(--on-surface)' }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {suggestions.length > 0 && (
+        <div style={{ padding: '12px 14px', borderTop: '1px solid var(--surface-container-low)' }}>
+          <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#92400e',
+            textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '8px',
+            display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span className="material-symbols-outlined" style={{ fontSize: '13px' }}>lightbulb</span>
+            Improvement Suggestions
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {suggestions.map((s, i) => (
+              <div key={i} style={{ display: 'flex', gap: '8px', fontSize: '0.8rem',
+                color: 'var(--on-surface)', alignItems: 'flex-start' }}>
+                <span style={{ color: '#d97706', flexShrink: 0, marginTop: '1px' }}>•</span>
+                {s}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -462,10 +591,11 @@ function BugCard({ bug, onStatusChange }) {
 
 function LiveActivityPanel({ events }) {
   const bottomRef = useRef(null);
+  const [lightbox, setLightbox] = useState(null);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [events]);
 
   return (
-    <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '10px', padding: '1rem', maxHeight: '240px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.78rem' }}>
+    <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '10px', padding: '1rem', maxHeight: '380px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '0.78rem' }}>
       {events.length === 0 && (
         <div style={{ color: 'var(--outline)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span className="material-symbols-outlined pulse" style={{ fontSize: '16px', color: 'var(--secondary)' }}>autorenew</span>
@@ -474,14 +604,28 @@ function LiveActivityPanel({ events }) {
       )}
       {events.map((ev, i) => {
         const cfg = EVENT_CONFIG[ev.type] || { color: 'var(--outline)', icon: 'info' };
+        const screenshotSrc = ev.screenshot_file ? `/screenshots/${ev.screenshot_file}` : null;
         return (
-          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '6px', color: cfg.color }}>
-            <span className="material-symbols-outlined" style={{ fontSize: '14px', flexShrink: 0, marginTop: '1px', fontVariationSettings: "'FILL' 1" }}>{cfg.icon}</span>
-            <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{ev.message || ev.type}</span>
+          <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px', color: cfg.color }}>
+            <span className="material-symbols-outlined" style={{ fontSize: '14px', flexShrink: 0, marginTop: '2px', fontVariationSettings: "'FILL' 1" }}>{cfg.icon}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ lineHeight: 1.4, wordBreak: 'break-word' }}>{ev.message || ev.type}</span>
+              {screenshotSrc && (
+                <div style={{ marginTop: '5px' }}>
+                  <img
+                    src={screenshotSrc}
+                    alt={ev.message}
+                    onClick={() => setLightbox({ src: screenshotSrc, label: ev.message })}
+                    style={{ height: '64px', borderRadius: '5px', border: '1px solid rgba(197,198,207,0.4)', objectFit: 'cover', cursor: 'zoom-in', display: 'block' }}
+                  />
+                </div>
+              )}
+            </div>
           </div>
         );
       })}
       <div ref={bottomRef} />
+      {lightbox && <Lightbox src={lightbox.src} label={lightbox.label} onClose={() => setLightbox(null)} />}
     </div>
   );
 }
@@ -495,11 +639,18 @@ export default function BugReports() {
   const [filter, setFilter]   = useState('all');
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
-  const [liveEvents, setLiveEvents]   = useState([]);
-  const [showLive, setShowLive]       = useState(true);
+  const [liveEvents, setLiveEvents] = useState(() => {
+    try {
+      const stored = localStorage.getItem(`bughunter_events_${id}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+  const [showLive, setShowLive] = useState(true);
+  const [showAgentLogs, setShowAgentLogs] = useState(true);
   const [generating, setGenerating]   = useState(false);
   const [featureContent, setFeatureContent]   = useState(null);
   const [featureFilename, setFeatureFilename] = useState('regression.feature');
+  const [controlLoading, setControlLoading] = useState(null); // 'stop' | 'pause' | 'resume' | null
   const sseRef  = useRef(null);
   const pollRef = useRef(null);
 
@@ -512,17 +663,28 @@ export default function BugReports() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // SSE while active; polling fallback
+  // SSE while running; polling fallback and when paused
   useEffect(() => {
     const isActive = run && ACTIVE_STATUSES.has(run.status);
-    if (isActive && !sseRef.current) {
+    const isPaused = run?.status === 'paused';
+    // Use SSE only when actually running (not paused — agent sends no events while paused)
+    if (isActive && !isPaused && !sseRef.current) {
       const token = localStorage.getItem('bughunter_token');
       const sse = new EventSource(`/api/runs/${id}/stream?token=${token}`);
       sseRef.current = sse;
       sse.onmessage = (e) => {
         try {
-          const event = JSON.parse(e.data);
-          setLiveEvents(prev => [...prev, event]);
+          const event = { ...JSON.parse(e.data), clientTs: Date.now() };
+          setLiveEvents(prev => {
+            const next = [...prev, event];
+            try {
+              localStorage.setItem(
+                `bughunter_events_${id}`,
+                JSON.stringify(next.slice(-500))
+              );
+            } catch { /* storage full — ignore */ }
+            return next;
+          });
           if (event.type === 'run_complete' || event.type === 'run_failed') {
             setTimeout(fetchData, 1000);
           }
@@ -532,6 +694,10 @@ export default function BugReports() {
         sse.close(); sseRef.current = null;
         if (!pollRef.current) pollRef.current = setInterval(fetchData, 5000);
       };
+    }
+    // Poll while paused (agent not sending SSE events) so we detect resume/stop
+    if (isPaused && !pollRef.current) {
+      pollRef.current = setInterval(fetchData, 3000);
     }
     if (!isActive) {
       if (sseRef.current) { sseRef.current.close(); sseRef.current = null; }
@@ -557,6 +723,36 @@ export default function BugReports() {
     } catch (err) {
       setError(err.response?.data?.error || err.message || 'Failed to generate tests');
     } finally { setGenerating(false); }
+  };
+
+  const handleStop = async () => {
+    setControlLoading('stop');
+    try {
+      await api.post(`/runs/${id}/stop`);
+      fetchData();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to stop run');
+    } finally { setControlLoading(null); }
+  };
+
+  const handlePause = async () => {
+    setControlLoading('pause');
+    try {
+      await api.post(`/runs/${id}/pause`);
+      fetchData();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to pause run');
+    } finally { setControlLoading(null); }
+  };
+
+  const handleResume = async () => {
+    setControlLoading('resume');
+    try {
+      await api.post(`/runs/${id}/resume`);
+      fetchData();
+    } catch (err) {
+      setError(err.response?.data?.error || err.message || 'Failed to resume run');
+    } finally { setControlLoading(null); }
   };
 
   const handleDownload = () => {
@@ -586,17 +782,66 @@ export default function BugReports() {
           <span style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: 'var(--on-tertiary-container)', textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '6px' }}>Vulnerability Report</span>
           <h2 style={{ fontSize: '2.25rem', fontWeight: 300, letterSpacing: '-0.02em', color: 'var(--primary)', marginBottom: '4px' }}>Test Results</h2>
         </div>
-        {run?.status === 'completed' && bugs.length > 0 && (
-          <button onClick={handleGenerateTests} disabled={generating} style={{
-            display: 'flex', alignItems: 'center', gap: '6px',
-            padding: '8px 16px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
-            background: 'var(--primary)', color: '#fff', border: 'none', cursor: generating ? 'wait' : 'pointer',
-            opacity: generating ? 0.7 : 1,
-          }}>
-            <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>science</span>
-            {generating ? 'Generating…' : 'Generate Tests'}
-          </button>
-        )}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Run controls: shown when test is pending or running */}
+          {(run?.status === 'pending' || run?.status === 'running') && (
+            <>
+              {run?.status === 'running' && (
+                <button onClick={handlePause} disabled={!!controlLoading} style={{
+                  display: 'flex', alignItems: 'center', gap: '5px',
+                  padding: '8px 14px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
+                  background: '#ede9fe', color: '#5b21b6', border: '1px solid #c4b5fd',
+                  cursor: controlLoading ? 'wait' : 'pointer', opacity: controlLoading ? 0.7 : 1,
+                }}>
+                  <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>pause</span>
+                  {controlLoading === 'pause' ? 'Pausing…' : 'Pause'}
+                </button>
+              )}
+              <button onClick={handleStop} disabled={!!controlLoading} style={{
+                display: 'flex', alignItems: 'center', gap: '5px',
+                padding: '8px 14px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
+                background: 'var(--error-container)', color: 'var(--error)', border: '1px solid var(--error)',
+                cursor: controlLoading ? 'wait' : 'pointer', opacity: controlLoading ? 0.7 : 1,
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>stop</span>
+                {controlLoading === 'stop' ? 'Stopping…' : 'Stop'}
+              </button>
+            </>
+          )}
+          {run?.status === 'paused' && (
+            <>
+              <button onClick={handleResume} disabled={!!controlLoading} style={{
+                display: 'flex', alignItems: 'center', gap: '5px',
+                padding: '8px 14px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
+                background: '#f0fdf4', color: '#16a34a', border: '1px solid #86efac',
+                cursor: controlLoading ? 'wait' : 'pointer', opacity: controlLoading ? 0.7 : 1,
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>play_arrow</span>
+                {controlLoading === 'resume' ? 'Resuming…' : 'Resume'}
+              </button>
+              <button onClick={handleStop} disabled={!!controlLoading} style={{
+                display: 'flex', alignItems: 'center', gap: '5px',
+                padding: '8px 14px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
+                background: 'var(--error-container)', color: 'var(--error)', border: '1px solid var(--error)',
+                cursor: controlLoading ? 'wait' : 'pointer', opacity: controlLoading ? 0.7 : 1,
+              }}>
+                <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>stop</span>
+                {controlLoading === 'stop' ? 'Stopping…' : 'Stop'}
+              </button>
+            </>
+          )}
+          {run?.status === 'completed' && bugs.length > 0 && (
+            <button onClick={handleGenerateTests} disabled={generating} style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              padding: '8px 16px', borderRadius: '8px', fontSize: '0.8rem', fontWeight: 600,
+              background: 'var(--primary)', color: '#fff', border: 'none', cursor: generating ? 'wait' : 'pointer',
+              opacity: generating ? 0.7 : 1,
+            }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>science</span>
+              {generating ? 'Generating…' : 'Generate Tests'}
+            </button>
+          )}
+        </div>
       </div>
 
       {error && (
@@ -609,27 +854,70 @@ export default function BugReports() {
       {/* Run overview */}
       {run && <RunOverviewCard run={run} bugs={bugs} />}
 
-      {/* Live activity — while running */}
-      {isActive && (
-        <div style={{ marginBottom: '1.5rem', background: 'var(--surface-container-low)', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--outline-variant)' }}>
-          <div onClick={() => setShowLive(!showLive)} style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-            <span className="material-symbols-outlined pulse" style={{ fontSize: '16px', color: 'var(--secondary)' }}>sensors</span>
-            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--on-surface)', flex: 1 }}>Live Activity</span>
-            <span className="material-symbols-outlined" style={{ fontSize: '18px', color: 'var(--outline)' }}>{showLive ? 'expand_less' : 'expand_more'}</span>
+      {/* Pipeline + activity + agent logs */}
+      {(isActive || liveEvents.length > 0) && (
+        <div style={{ marginBottom: '1.5rem' }}>
+          <AgentPipelineTracker events={liveEvents} runStatus={run?.status} variant="run" />
+
+          <div style={{ marginBottom: '1rem', background: 'var(--surface-container-low)', borderRadius: '12px', overflow: 'hidden', border: `1px solid ${isActive ? 'var(--secondary)' : 'var(--outline-variant)'}` }}>
+            <div onClick={() => setShowLive(!showLive)} style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <span className={`material-symbols-outlined${isActive ? ' pulse' : ''}`} style={{ fontSize: '16px', color: isActive ? 'var(--secondary)' : 'var(--outline)' }}>
+                {isActive ? 'sensors' : 'history'}
+              </span>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--on-surface)', flex: 1 }}>
+                {isActive ? 'Live Activity' : 'Activity Log'}
+              </span>
+              <span style={{ fontSize: '0.7rem', color: 'var(--outline)', padding: '2px 8px', background: 'var(--surface-container)', borderRadius: '999px' }}>
+                {liveEvents.length} events
+              </span>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: 'var(--outline)', marginLeft: '4px' }}>{showLive ? 'expand_less' : 'expand_more'}</span>
+            </div>
+            {showLive && <div style={{ padding: '0 12px 12px' }}><LiveActivityPanel events={liveEvents} /></div>}
           </div>
-          {showLive && <div style={{ padding: '0 12px 12px' }}><LiveActivityPanel events={liveEvents} /></div>}
+
+          <div style={{ background: 'var(--surface-container-low)', borderRadius: '12px', overflow: 'hidden', border: '1px solid var(--outline-variant)' }}>
+            <div onClick={() => setShowAgentLogs(!showAgentLogs)} style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+              <span className="material-symbols-outlined" style={{ fontSize: '16px', color: 'var(--secondary)' }}>hub</span>
+              <span style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--on-surface)', flex: 1 }}>
+                Agent logs
+              </span>
+              <span style={{ fontSize: '0.7rem', color: 'var(--outline)', padding: '2px 8px', background: 'var(--surface-container)', borderRadius: '999px' }}>
+                By agent
+              </span>
+              <span className="material-symbols-outlined" style={{ fontSize: '18px', color: 'var(--outline)', marginLeft: '4px' }}>{showAgentLogs ? 'expand_less' : 'expand_more'}</span>
+            </div>
+            {showAgentLogs && (
+              <div style={{ padding: '0 12px 12px' }}>
+                <AgentActivityLog events={liveEvents} />
+              </div>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Success / Failure panels */}
-      {run?.status === 'completed' && <SuccessPanel run={run} bugs={bugs} />}
-      {run?.status === 'failed'    && <FailurePanel run={run} />}
+      {/* Success / Failure / Cancelled panels */}
+      {run?.status === 'completed'  && <SuccessPanel run={run} bugs={bugs} />}
+      {run?.status === 'failed'     && <FailurePanel run={run} />}
+      {run?.status === 'cancelled'  && (
+        <div style={{ background: '#fef3c7', borderRadius: '12px', padding: '1rem 1.25rem', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '12px', border: '1px solid #fcd34d' }}>
+          <span className="material-symbols-outlined" style={{ color: '#d97706', fontSize: '20px', fontVariationSettings: "'FILL' 1" }}>stop_circle</span>
+          <div>
+            <div style={{ fontWeight: 600, color: '#92400e', marginBottom: '2px' }}>Test run cancelled</div>
+            <div style={{ fontSize: '0.8rem', color: '#b45309' }}>The run was stopped early. Any bugs found before cancellation are shown below.</div>
+          </div>
+        </div>
+      )}
 
-      {/* Pages explored with screenshots — shown for completed and failed */}
-      {(run?.status === 'completed' || run?.status === 'failed') && (
+      {/* Test execution summary — shown for completed, failed, and cancelled */}
+      {['completed', 'failed', 'cancelled'].includes(run?.status) && (
+        <TestExecutionSummary run={run} />
+      )}
+
+      {/* Pages explored with screenshots — shown for completed, failed, and cancelled */}
+      {['completed', 'failed', 'cancelled'].includes(run?.status) && (
         <PagesExplored
           summary={run.summary}
-          accentColor={run.status === 'failed' ? 'var(--error)' : '#16a34a'}
+          accentColor={run.status === 'cancelled' ? '#d97706' : run.status === 'failed' ? 'var(--error)' : '#16a34a'}
         />
       )}
 

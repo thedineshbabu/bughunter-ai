@@ -215,8 +215,8 @@ export default function ApiTesting() {
     <div>
       {/* Header */}
       <div style={{ marginBottom: '2rem' }}>
-        <span style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: 'var(--on-tertiary-container)', textTransform: 'uppercase', letterSpacing: '0.2em', marginBottom: '6px' }}>AI-Powered Testing</span>
-        <h2 style={{ fontSize: '2.25rem', fontWeight: 300, letterSpacing: '-0.02em', color: 'var(--primary)', marginBottom: '6px' }}>API Testing</h2>
+        <span style={{ display: 'block', fontSize: '11px', fontWeight: 700, color: 'var(--on-surface-variant)', textTransform: 'uppercase', letterSpacing: '0.14em', marginBottom: '6px' }}>AI-powered testing</span>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--primary)', marginBottom: '6px' }}>API testing</h1>
         <p style={{ color: 'var(--on-surface-variant)', fontSize: '0.875rem' }}>Upload an OpenAPI/Swagger spec — the AI generates and executes test cases per endpoint.</p>
       </div>
 
@@ -228,9 +228,9 @@ export default function ApiTesting() {
       )}
 
       {/* Step 1: Upload spec */}
-      <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '12px', padding: '1.5rem', marginBottom: '1.5rem', border: '1px solid var(--outline-variant)' }}>
+      <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '8px', padding: '1.5rem', marginBottom: '1.5rem', border: '1px solid var(--border-subtle)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '1rem' }}>
-          <span style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>1</span>
+          <span style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--primary-button)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>1</span>
           <span style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--on-surface)' }}>Upload or paste your OpenAPI spec (JSON)</span>
         </div>
 
@@ -259,32 +259,36 @@ export default function ApiTesting() {
             style={{ flex: 1, padding: '9px 12px', borderRadius: '8px', border: '1px solid var(--outline-variant)', background: 'var(--surface-container-low)', color: 'var(--on-surface)', fontSize: '0.85rem' }}
           />
           <button
+            type="button"
             onClick={handleParseSpec}
             disabled={!specText.trim() || parsing}
-            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '9px 20px', borderRadius: '8px', background: 'var(--secondary)', color: '#fff', border: 'none', fontSize: '0.85rem', fontWeight: 600, cursor: !specText.trim() || parsing ? 'not-allowed' : 'pointer', opacity: !specText.trim() || parsing ? 0.6 : 1 }}
+            className="btn-primary"
+            style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '9px 20px', fontSize: '0.85rem', fontWeight: 600, cursor: !specText.trim() || parsing ? 'not-allowed' : 'pointer', opacity: !specText.trim() || parsing ? 0.6 : 1 }}
           >
             <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>document_scanner</span>
-            {parsing ? 'Parsing…' : 'Parse Spec'}
+            {parsing ? 'Parsing…' : 'Parse spec'}
           </button>
         </div>
       </div>
 
       {/* Step 2: Endpoint list */}
       {parsedSpec && (
-        <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '12px', overflow: 'hidden', marginBottom: '1.5rem', border: '1px solid var(--outline-variant)' }}>
-          <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--outline-variant)', display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <span style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--primary)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>2</span>
+        <div style={{ background: 'var(--surface-container-lowest)', borderRadius: '8px', overflow: 'hidden', marginBottom: '1.5rem', border: '1px solid var(--border-subtle)' }}>
+          <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--border-subtle)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ width: '24px', height: '24px', borderRadius: '50%', background: 'var(--primary-button)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, flexShrink: 0 }}>2</span>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--on-surface)' }}>{parsedSpec.spec_info?.title}</div>
               <div style={{ fontSize: '0.75rem', color: 'var(--outline)' }}>{parsedSpec.endpoints?.length} endpoint{parsedSpec.endpoints?.length !== 1 ? 's' : ''} detected{parsedSpec.spec_info?.version ? ` · v${parsedSpec.spec_info.version}` : ''}</div>
             </div>
             <button
+              type="button"
               onClick={handleRunTests}
               disabled={running}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', borderRadius: '8px', background: running ? 'var(--outline)' : 'var(--primary)', color: '#fff', border: 'none', fontSize: '0.85rem', fontWeight: 600, cursor: running ? 'wait' : 'pointer' }}
+              className="btn-primary"
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '8px 20px', fontSize: '0.85rem', fontWeight: 600, cursor: running ? 'wait' : 'pointer', background: running ? 'var(--outline)' : undefined }}
             >
               <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>play_arrow</span>
-              {running ? 'Running…' : 'Run Tests'}
+              {running ? 'Running…' : 'Run tests'}
             </button>
           </div>
           <div style={{ maxHeight: '300px', overflowY: 'auto' }}>

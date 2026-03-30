@@ -10,13 +10,15 @@ const inputStyle = {
   color: 'var(--on-surface)', boxSizing: 'border-box',
 };
 
-export default function NewRunModal({ onClose, onCreated }) {
+export default function NewRunModal({ onClose, onCreated, defaultAppId }) {
   const [apps, setApps] = useState([]);
   const [appId, setAppId] = useState('');
   const [notes, setNotes] = useState('');
   const [maxPages, setMaxPages] = useState(5);
   const [instructions, setInstructions] = useState('');
   const [focusAreas, setFocusAreas] = useState('');
+  const [screenshotLoginSteps, setScreenshotLoginSteps] = useState(true);
+  const [detailedReport, setDetailedReport] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const navigate = useNavigate();
@@ -25,9 +27,13 @@ export default function NewRunModal({ onClose, onCreated }) {
     api.get('/apps').then(res => {
       const list = res.data.apps || [];
       setApps(list);
-      if (list.length > 0) setAppId(list[0].id);
+      if (defaultAppId && list.some(a => a.id === defaultAppId)) {
+        setAppId(defaultAppId);
+      } else if (list.length > 0) {
+        setAppId(list[0].id);
+      }
     });
-  }, []);
+  }, [defaultAppId]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -38,6 +44,8 @@ export default function NewRunModal({ onClose, onCreated }) {
         max_pages: maxPages,
         instructions: instructions.trim(),
         focus_areas: focusAreas.trim(),
+        screenshot_login_steps: screenshotLoginSteps,
+        detailed_report: detailedReport,
       };
       const res = await api.post('/runs', { app_id: appId, notes, test_config });
       onCreated?.();
@@ -123,6 +131,54 @@ export default function NewRunModal({ onClose, onCreated }) {
                 More pages = deeper coverage but longer run time
               </div>
             </div>
+
+            {/* Login step screenshots toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--on-surface-variant)' }}>
+                  Capture login step screenshots
+                </label>
+                <div style={{ fontSize: '0.72rem', color: 'var(--outline)', marginTop: '2px' }}>
+                  Screenshot after each auto-login action
+                </div>
+              </div>
+              <button type="button" onClick={() => setScreenshotLoginSteps(v => !v)} style={{
+                flexShrink: 0, width: '40px', height: '22px', borderRadius: '11px', border: 'none',
+                background: screenshotLoginSteps ? 'var(--secondary)' : 'var(--outline-variant)',
+                position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
+              }}>
+                <span style={{
+                  position: 'absolute', top: '3px', width: '16px', height: '16px',
+                  borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                  left: screenshotLoginSteps ? '21px' : '3px',
+                }} />
+              </button>
+            </div>
+
+            {/* Detailed report toggle */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingTop: '4px', borderTop: '1px solid rgba(197,198,207,0.2)' }}>
+              <div>
+                <label style={{ display: 'block', fontSize: '0.7rem', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--on-surface-variant)' }}>
+                  Detailed AI report
+                </label>
+                <div style={{ fontSize: '0.72rem', color: 'var(--outline)', marginTop: '2px' }}>
+                  {detailedReport
+                    ? 'AI enriches each bug with steps, expected vs actual, severity'
+                    : 'Quick mode — raw bugs logged instantly, no AI enrichment'}
+                </div>
+              </div>
+              <button type="button" onClick={() => setDetailedReport(v => !v)} style={{
+                flexShrink: 0, width: '40px', height: '22px', borderRadius: '11px', border: 'none',
+                background: detailedReport ? 'var(--secondary)' : 'var(--outline-variant)',
+                position: 'relative', cursor: 'pointer', transition: 'background 0.2s',
+              }}>
+                <span style={{
+                  position: 'absolute', top: '3px', width: '16px', height: '16px',
+                  borderRadius: '50%', background: '#fff', transition: 'left 0.2s',
+                  left: detailedReport ? '21px' : '3px',
+                }} />
+              </button>
+            </div>
           </div>
 
           {/* Notes */}
@@ -138,7 +194,7 @@ export default function NewRunModal({ onClose, onCreated }) {
             <button type="button" onClick={onClose} style={{ flex: 1, padding: '12px', border: '1px solid var(--outline-variant)', borderRadius: '8px', background: 'transparent', color: 'var(--on-surface)', fontSize: '0.875rem', fontWeight: 500 }}>
               Cancel
             </button>
-            <button type="submit" disabled={loading || apps.length === 0} style={{ flex: 2, padding: '12px', background: 'linear-gradient(135deg, var(--primary), var(--primary-container))', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '0.875rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: loading || apps.length === 0 ? 0.7 : 1 }}>
+            <button type="submit" disabled={loading || apps.length === 0} className="btn-primary" style={{ flex: 2, padding: '12px', fontSize: '0.875rem', fontWeight: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', opacity: loading || apps.length === 0 ? 0.7 : 1 }}>
               <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>play_arrow</span>
               {loading ? 'Starting...' : 'Start Test Run'}
             </button>

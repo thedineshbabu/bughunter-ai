@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
 from providers import get_llm
+from tools.control import SIGNAL_STOP, check_run_control
 from tools.events import publish_event
 
 logger = logging.getLogger("bughunter.validator")
@@ -62,6 +63,10 @@ If no bugs found, return an empty array [].
         test_steps = state.get("test_steps", [])
         bugs_found = list(state.get("bugs_found", []))
         run_id = state.get("run_id")
+
+        if check_run_control(run_id) == SIGNAL_STOP:
+            logger.info(f"Run {run_id} stopped — skipping validation")
+            return {**state, "current_agent": "validator"}
 
         logger.info(f"Validating {len(test_steps)} test steps")
         publish_event(run_id, "agent_start", {"agent": "validator", "message": "Analyzing screenshots for bugs…"})

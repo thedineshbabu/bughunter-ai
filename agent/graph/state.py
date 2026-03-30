@@ -36,3 +36,21 @@ class AgentState(TypedDict):
 
     # Final structured report (populated by ReporterAgent)
     report: Optional[List[Dict[str, Any]]]
+
+    # Per-app persistent memory loaded from PostgreSQL before each run.
+    # None when no memory exists yet (first run for this app).
+    app_memory: Optional[Dict[str, Any]]
+
+    # Login steps produced by a successful smart login this run.
+    # Populated by ExplorerAgent; consumed by extract_memory_updates() to
+    # persist the working flow so future runs can skip LLM login discovery.
+    login_steps_for_memory: Optional[List[Dict[str, Any]]]
+
+    # Parsed orchestrator output (pages, journeys, focus_areas, notes) — drives explorer priorities.
+    strategic_plan: Optional[Dict[str, Any]]
+
+    # URLs visited during exploration — consumed by SecurityAgent for multi-page scans.
+    visited_urls: Optional[List[str]]
+
+    # Populated by ReporterAgent after deduplicating bugs_found.
+    dedupe_stats: Optional[Dict[str, Any]]
