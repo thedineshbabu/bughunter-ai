@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''agent/agents/explorer.py''\\).read\\(\\)\\); print\\(''explorer.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''agent/tools/storage.py''\\).read\\(\\)\\); print\\(''storage.py: OK''\\)\")",
+      "Bash(docker ps:*)",
+      "Bash(docker exec:*)",
+      "Bash(Get-Content \"database\\\\migrations\\\\007_app_memory.sql\")"
+    ]
+  }
+}

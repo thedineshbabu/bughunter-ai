@@ -15,22 +15,28 @@ logger = logging.getLogger("bughunter.screenshot")
 SCREENSHOTS_DIR = os.path.join(os.path.dirname(__file__), "..", "screenshots")
 
 
-def capture(page, label: str) -> Dict[str, Any]:
+def capture(page, label: str, run_id: str = None) -> Dict[str, Any]:
     """
     Take a screenshot of the given Playwright page.
 
     Args:
         page: Playwright Page object
         label: Descriptive label for this screenshot
+        run_id: Optional test run ID; when provided, screenshots are saved under
+                screenshots/{run_id}/ instead of the root screenshots folder.
 
     Returns:
         dict with keys: label, base64, url (current page URL), timestamp, local_path
     """
-    os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+    if run_id:
+        save_dir = os.path.join(SCREENSHOTS_DIR, str(run_id))
+    else:
+        save_dir = SCREENSHOTS_DIR
+    os.makedirs(save_dir, exist_ok=True)
 
     timestamp = int(time.time())
     filename = f"{label}_{timestamp}.png"
-    local_path = os.path.join(SCREENSHOTS_DIR, filename)
+    local_path = os.path.join(save_dir, filename)
 
     raw_bytes = page.screenshot(full_page=True)
     encoded = base64.b64encode(raw_bytes).decode("utf-8")

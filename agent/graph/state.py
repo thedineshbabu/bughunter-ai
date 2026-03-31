@@ -31,10 +31,32 @@ class AgentState(TypedDict):
     error: Optional[str]
     status: str  # "pending" | "running" | "completed" | "failed"
 
+    # Test configuration supplied by the user at run-creation time
+    test_config: Optional[Dict[str, Any]]  # {max_pages, instructions, focus_areas}
+
     # Final structured report (populated by ReporterAgent)
     report: Optional[List[Dict[str, Any]]]
 
-    # Memory & Skills (populated by runner before pipeline starts)
-    memory: Optional[Dict[str, Any]]       # Historical context for this app
-    skills: Optional[List[Dict[str, Any]]] # Relevant learned patterns
-    app_id: Optional[str]                  # App ID for memory lookups
+    # Per-app persistent memory loaded from PostgreSQL before each run.
+    # None when no memory exists yet (first run for this app).
+    app_memory: Optional[Dict[str, Any]]
+
+    # Agent skills — learned patterns from agent_skills table
+    skills: Optional[List[Dict[str, Any]]]
+
+    # App ID for memory/skills lookups
+    app_id: Optional[str]
+
+    # Login steps produced by a successful smart login this run.
+    # Populated by ExplorerAgent; consumed by extract_memory_updates() to
+    # persist the working flow so future runs can skip LLM login discovery.
+    login_steps_for_memory: Optional[List[Dict[str, Any]]]
+
+    # Parsed orchestrator output (pages, journeys, focus_areas, notes) — drives explorer priorities.
+    strategic_plan: Optional[Dict[str, Any]]
+
+    # URLs visited during exploration — consumed by SecurityAgent for multi-page scans.
+    visited_urls: Optional[List[str]]
+
+    # Populated by ReporterAgent after deduplicating bugs_found.
+    dedupe_stats: Optional[Dict[str, Any]]

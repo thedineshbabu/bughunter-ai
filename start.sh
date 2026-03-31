@@ -371,6 +371,26 @@ if [ -n "$AUTH_TOKEN" ]; then
         '{"username":"admin@juice-sh.op","password":"admin123"}'
     register_app "DVWA" "http://localhost:8080/login.php" \
         '{"username":"admin","password":"password"}'
+
+    # Korn Ferry Talent — SSO (Microsoft Entra IDP)
+    KF_EMAIL="$(read_env_key "$BACKEND/.env" KF_EMAIL)"
+    KF_IDP_PASSWORD="$(read_env_key "$BACKEND/.env" KF_IDP_PASSWORD)"
+    if [ -n "$KF_EMAIL" ] && [ -n "$KF_IDP_PASSWORD" ]; then
+        KF_CREDS=$(printf '%s' "{\"login_flow\":[
+            {\"action\":\"fill\",\"selector\":\"#email-input\",\"value\":\"$KF_EMAIL\"},
+            {\"action\":\"click\",\"selector\":\"#submit-button\"},
+            {\"action\":\"wait_for_navigation\",\"timeout\":15000},
+            {\"action\":\"wait_for_selector\",\"selector\":\"#i0118\",\"timeout\":15000},
+            {\"action\":\"fill\",\"selector\":\"#i0118\",\"value\":\"$KF_IDP_PASSWORD\"},
+            {\"action\":\"click\",\"selector\":\"#idSIButton9\"},
+            {\"action\":\"wait_for_navigation\",\"timeout\":20000}
+        ]}")
+        register_app "Korn Ferry Talent (SSO)" \
+            "https://home.kornferrytalent-dev.com/login" \
+            "$KF_CREDS"
+    else
+        warn "KF_EMAIL or KF_IDP_PASSWORD not set in backend/.env — skipping Korn Ferry app registration"
+    fi
 else
     warn "Could not obtain auth token — skipping sample app registration"
 fi
@@ -392,6 +412,7 @@ echo -e ""
 echo -e "  Sample test sites:"
 echo -e "  Juice Shop   ->  http://localhost:3000  (admin@juice-sh.op / admin123)"
 echo -e "  DVWA         ->  http://localhost:8080  (admin / password)"
+echo -e "  Korn Ferry   ->  https://home.kornferrytalent-dev.com/login  (SSO - set KF_IDP_PASSWORD in backend/.env)"
 echo -e ""
 echo -e "${CYN}  Default BugHunter account:${RST}"
 echo -e "  Email        ->  ${GRN}$DEFAULT_EMAIL${RST}"

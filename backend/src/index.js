@@ -2,6 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
 import { createLogger, format, transports } from 'winston';
 
 import authRoutes from './routes/auth.routes.js';
@@ -45,6 +47,11 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// ── Static screenshots (served from agent/screenshots/) ───────────────────────
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const screenshotsDir = join(__dirname, '../../agent/screenshots');
+app.use('/screenshots', express.static(screenshotsDir));
 
 // ── Health check ─────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {

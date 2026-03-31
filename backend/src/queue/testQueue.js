@@ -21,14 +21,18 @@ const testQueue = new Queue(QUEUE_NAME, { connection });
  * and also adds a BullMQ job for observability and retry support.
  *
  * @param {string} runId - UUID of the test run
+ * @param {string} appId - UUID of the app (used by Python worker to load/save app memory)
  * @param {string} appUrl - URL of the app to test
  * @param {object|null} credentials - Plaintext login credentials (never ciphertext)
+ * @param {object|null} testConfig - Optional test configuration {max_pages, instructions, focus_areas}
  */
-export async function enqueueTestRun(runId, appUrl, credentials = null) {
+export async function enqueueTestRun(runId, appId, appUrl, credentials = null, testConfig = null) {
   const payload = {
     run_id: runId,
+    app_id: appId,
     app_url: appUrl,
     credentials,
+    test_config: testConfig,
     enqueued_at: new Date().toISOString(),
   };
 

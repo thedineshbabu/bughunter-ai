@@ -10,7 +10,10 @@ from langchain_core.messages import HumanMessage
 
 from graph.state import AgentState
 from providers import get_llm
+from tools.bug_dedupe import dedupe_bugs
+from tools.control import SIGNAL_STOP, check_run_control
 from tools.events import publish_event
+from tools.memory import make_fingerprint
 
 logger = logging.getLogger("bughunter.reporter")
 
@@ -21,31 +24,13 @@ class ReporterAgent:
     def __init__(self):
         self.llm = get_llm()
 
-    def _generate_report(self, bug: dict, known_bugs: list = None) -> dict:
+    def _generate_report(self, bug: dict) -> dict:
         """Use Claude to enrich a raw bug observation into a full bug report."""
-        regression_note = ""
-        if known_bugs:
-            page_url = bug.get("page_url", "")
-            fixed_on_page = [
-                b for b in known_bugs
-                if b.get("status") == "fixed" and b.get("page_url") == page_url
-            ]
-            for kb in fixed_on_page:
-                # Simple title similarity check
-                if kb.get("title", "").lower()[:30] in bug.get("title", "").lower() or \
-                   bug.get("title", "").lower()[:30] in kb.get("title", "").lower():
-                    regression_note = (
-                        f"\nREGRESSION ALERT: A similar bug was previously found and marked as FIXED: "
-                        f"'{kb['title']}'. If this is the same issue, mark type as 'regression' "
-                        f"and note that it is a recurring problem.\n"
-                    )
-                    break
-
         prompt = f"""You are a senior QA engineer writing a professional bug report.
 
 Raw bug observation:
 {json.dumps(bug, indent=2)}
-{regression_note}
+
 Generate a structured bug report with these exact fields:
 {{
   "title": "concise, descriptive title (max 100 chars)",
@@ -54,7 +39,7 @@ Generate a structured bug report with these exact fields:
   "expected_behavior": "what should happen",
   "actual_behavior": "what actually happens",
   "severity": "critical|high|medium|low",
-  "type": "functional|security|ui|performance|data|regression",
+  "type": "functional|security|ui|performance|data",
   "page_url": "URL where the bug was found",
   "screenshot_url": null
 }}
@@ -85,19 +70,36 @@ Return ONLY the JSON object, no extra text.
         }
 
     def run(self, state: AgentState) -> AgentState:
-        bugs_found = state.get("bugs_found", [])
+        raw_bugs = list(state.get("bugs_found", []))
         run_id = state.get("run_id")
-        memory = state.get("memory") or {}
-        known_bugs = memory.get("previous_bugs", [])
-        logger.info(f"Generating reports for {len(bugs_found)} bug(s)")
-        publish_event(run_id, "agent_start", {"agent": "reporter", "message": f"Writing structured reports for {len(bugs_found)} bug(s)…"})
+
+        if check_run_control(run_id) == SIGNAL_STOP:
+            logger.info(f"Run {run_id} stopped — skipping reporter (saving partial results)")
+            return {**state, "current_agent": "reporter", "status": "cancelled", "report": []}
+
+        deduped, dedupe_stats = dedupe_bugs(raw_bugs)
+        logger.info(f"Generating reports for {len(deduped)} bug(s) after dedupe (raw {len(raw_bugs)})")
+        publish_event(
+            run_id,
+            "agent_start",
+            {"agent": "reporter", "message": f"Writing structured reports for {len(deduped)} bug(s)…"},
+        )
+
+        # Build set of known bug fingerprints for regression detection
+        known_fps = {
+            b["fingerprint"]
+            for b in (state.get("app_memory") or {}).get("known_bugs", [])
+        }
 
         structured_reports = []
-        for raw_bug in bugs_found:
-            report = self._generate_report(raw_bug, known_bugs)
+        for raw_bug in deduped:
+            report = self._generate_report(raw_bug)
             # Preserve screenshot_url if present on the original bug
             if "screenshot_url" in raw_bug and not report.get("screenshot_url"):
                 report["screenshot_url"] = raw_bug["screenshot_url"]
+            # Tag as regression if the same bug was seen in a previous run
+            fp = make_fingerprint(report.get("title", ""), report.get("page_url", ""))
+            report["regression"] = fp in known_fps
             structured_reports.append(report)
 
         logger.info(f"Generated {len(structured_reports)} structured bug report(s)")
@@ -107,5 +109,66 @@ Return ONLY the JSON object, no extra text.
             **state,
             "current_agent": "reporter",
             "status": "completed",
+            "bugs_found": deduped,
             "report": structured_reports,
+            "dedupe_stats": dedupe_stats,
+        }
+
+
+class SimpleReporterAgent:
+    """Fast reporter that skips LLM enrichment.
+
+    Deduplicates raw bug observations and normalises them into the same report
+    schema as ReporterAgent, but without any LLM call. Use when the user
+    selects "quick log" mode at run-creation time.
+    """
+
+    def run(self, state: AgentState) -> AgentState:
+        raw_bugs = list(state.get("bugs_found", []))
+        run_id = state.get("run_id")
+
+        if check_run_control(run_id) == SIGNAL_STOP:
+            logger.info(f"Run {run_id} stopped — skipping simple reporter (saving partial results)")
+            return {**state, "current_agent": "reporter", "status": "cancelled", "report": []}
+
+        deduped, dedupe_stats = dedupe_bugs(raw_bugs)
+        logger.info(f"Simple reporter: logging {len(deduped)} bug(s) (no LLM enrichment, raw {len(raw_bugs)})")
+        publish_event(
+            run_id,
+            "agent_start",
+            {"agent": "reporter", "message": f"Logging {len(deduped)} bug(s) (quick mode — no AI enrichment)…"},
+        )
+
+        known_fps = {
+            b["fingerprint"]
+            for b in (state.get("app_memory") or {}).get("known_bugs", [])
+        }
+
+        reports = []
+        for bug in deduped:
+            report = {
+                "title": bug.get("title") or "Bug Detected",
+                "description": bug.get("description") or "",
+                "steps_to_reproduce": "See agent logs for details.",
+                "expected_behavior": "Application should function correctly.",
+                "actual_behavior": bug.get("description") or "Unexpected behaviour observed.",
+                "severity": bug.get("severity") or "medium",
+                "type": bug.get("type") or "functional",
+                "page_url": bug.get("page_url") or "",
+                "screenshot_url": bug.get("screenshot_url") or None,
+            }
+            fp = make_fingerprint(report["title"], report["page_url"])
+            report["regression"] = fp in known_fps
+            reports.append(report)
+
+        logger.info(f"Simple reporter: {len(reports)} bug(s) logged")
+        publish_event(run_id, "agent_done", {"agent": "reporter", "message": f"{len(reports)} bug(s) logged (quick mode)"})
+
+        return {
+            **state,
+            "current_agent": "reporter",
+            "status": "completed",
+            "bugs_found": deduped,
+            "report": reports,
+            "dedupe_stats": dedupe_stats,
         }

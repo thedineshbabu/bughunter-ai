@@ -1,134 +1,196 @@
 """
 BugHunter.AI - Memory & Skills Service
-Loads historical context and learned patterns for agent self-improvement.
+Per-app persistent memory stored in PostgreSQL, plus agent skills for self-improvement.
+
+Loads before each run, updated after each successful run.
+All functions are safe on first run (no row yet → returns {}).
 """
 
+import copy
+import hashlib
 import json
 import logging
 from collections import defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+from urllib.parse import urlparse
 
 import psycopg2.extras
 
-from tools.storage import _get_conn
+from tools.storage import _get_conn  # reuse the existing connection pool
 
 logger = logging.getLogger("bughunter.memory")
 
 
 # ---------------------------------------------------------------------------
-# Lookup helpers
+# App Memory (JSONB blob per app — from app_memory table)
 # ---------------------------------------------------------------------------
 
-def get_app_id_for_run(run_id: str) -> Optional[str]:
-    """Query test_runs to get app_id for a given run_id."""
+
+def load_memory(app_id: str) -> dict:
+    """Load the memory blob for an app. Returns {} on first run or any error."""
     try:
         with _get_conn() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT app_id FROM test_runs WHERE id = %s", (run_id,))
+            cur.execute("SELECT data FROM app_memory WHERE app_id = %s", (app_id,))
             row = cur.fetchone()
             cur.close()
-            return str(row[0]) if row else None
+            return row[0] if row else {}
     except Exception as exc:
-        logger.error(f"get_app_id_for_run failed: {exc}")
-        return None
+        logger.error(f"load_memory failed for app {app_id}: {exc}")
+        return {}
 
 
-def get_previous_bugs_for_app(app_id: str, limit: int = 50) -> List[Dict[str, Any]]:
-    """Fetch bug reports from previous runs for the same app."""
+def save_memory(app_id: str, memory: dict) -> bool:
+    """
+    Upsert the memory blob for an app.
+    Creates the row on first run, updates it on subsequent runs.
+    Returns True on success, False on failure (non-fatal).
+    """
     try:
         with _get_conn() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, run_id, title, description, severity, status, page_url
-                FROM bug_reports
-                WHERE app_id = %s
-                ORDER BY created_at DESC
-                LIMIT %s
+                INSERT INTO app_memory (app_id, data)
+                VALUES (%s, %s)
+                ON CONFLICT (app_id) DO UPDATE
+                  SET data = EXCLUDED.data,
+                      updated_at = NOW()
                 """,
-                (app_id, limit),
+                (app_id, json.dumps(memory)),
             )
-            rows = cur.fetchall()
+            conn.commit()
             cur.close()
-            return [dict(r) for r in rows]
+        logger.info(f"Memory saved for app {app_id}")
+        return True
     except Exception as exc:
-        logger.error(f"get_previous_bugs_for_app failed: {exc}")
+        logger.error(f"save_memory failed for app {app_id}: {exc}")
+        return False
+
+
+def make_fingerprint(title: str, page_url: str) -> str:
+    """
+    Stable bug identity: SHA-256 of (title + page_url), both normalised.
+    Used to detect the same bug across multiple runs (regression detection).
+    """
+    normalised = (title.lower().strip() + page_url.lower().strip()).encode()
+    return hashlib.sha256(normalised).hexdigest()
+
+
+def build_page_priority_list(memory: dict, base_url: str) -> List[str]:
+    """
+    Return bug-prone page URLs from memory sorted descending by priority_score,
+    filtered to the same origin as base_url.
+
+    Called by ExplorerAgent to visit historically buggy pages first.
+    """
+    try:
+        base_origin = _origin(base_url)
+        pages = memory.get("pages", {})
+        same_origin = [
+            (url, info)
+            for url, info in pages.items()
+            if _origin(url) == base_origin and info.get("bug_count", 0) > 0
+        ]
+        same_origin.sort(key=lambda kv: kv[1].get("priority_score", 0), reverse=True)
+        return [url for url, _ in same_origin]
+    except Exception as exc:
+        logger.debug(f"build_page_priority_list error: {exc}")
         return []
 
 
+def extract_memory_updates(state: Dict[str, Any], existing_memory: dict) -> dict:
+    """
+    Pure function — no DB calls.
+    Takes a completed AgentState and the memory loaded at run start.
+    Returns the new memory dict that should be saved.
+
+    Handles:
+    1. Login steps from a successful smart login
+    2. Page priority scores from bugs found
+    3. Known-bug deduplication via fingerprints
+    4. Run metadata (total_runs, last_run_id)
+    """
+    memory = copy.deepcopy(existing_memory) if existing_memory else {}
+    run_id = state.get("run_id", "")
+    report: List[Dict] = state.get("report") or []
+
+    # ------------------------------------------------------------------
+    # 1. Login steps
+    # ------------------------------------------------------------------
+    login_steps = state.get("login_steps_for_memory")
+    if login_steps:
+        memory["login"] = {
+            "working_steps": login_steps,
+            "last_success_run_id": run_id,
+            "failure_count": 0,
+        }
+    elif memory.get("login", {}).get("working_steps"):
+        had_smart_fallback = any(
+            s.get("action") == "smart_login_completed"
+            for s in (state.get("test_steps") or [])
+        )
+        if had_smart_fallback:
+            memory["login"]["failure_count"] = memory["login"].get("failure_count", 0) + 1
+
+    # ------------------------------------------------------------------
+    # 2. Page priority scores
+    # ------------------------------------------------------------------
+    pages: dict = memory.setdefault("pages", {})
+    for bug in report:
+        page_url = (bug.get("page_url") or "").strip()
+        if not page_url:
+            continue
+        if page_url not in pages:
+            pages[page_url] = {"bug_count": 0, "priority_score": 0, "last_visited_run_id": run_id}
+        pages[page_url]["bug_count"] = pages[page_url].get("bug_count", 0) + 1
+        pages[page_url]["last_visited_run_id"] = run_id
+        pages[page_url]["priority_score"] = pages[page_url]["bug_count"]
+
+    # ------------------------------------------------------------------
+    # 3. Known bugs (dedup by fingerprint)
+    # ------------------------------------------------------------------
+    known_bugs: list = memory.setdefault("known_bugs", [])
+    fp_to_idx = {b["fingerprint"]: i for i, b in enumerate(known_bugs)}
+
+    for bug in report:
+        fp = make_fingerprint(bug.get("title", ""), bug.get("page_url", ""))
+        if fp in fp_to_idx:
+            idx = fp_to_idx[fp]
+            known_bugs[idx]["last_seen_run_id"] = run_id
+            known_bugs[idx]["occurrence_count"] = known_bugs[idx].get("occurrence_count", 1) + 1
+        else:
+            entry = {
+                "fingerprint": fp,
+                "title": bug.get("title", ""),
+                "page_url": bug.get("page_url", ""),
+                "severity": bug.get("severity", "medium"),
+                "type": bug.get("type", "functional"),
+                "first_seen_run_id": run_id,
+                "last_seen_run_id": run_id,
+                "occurrence_count": 1,
+            }
+            fp_to_idx[fp] = len(known_bugs)
+            known_bugs.append(entry)
+
+    # Cap at 100 entries; evict those with the oldest last_seen_run_id
+    if len(known_bugs) > 100:
+        known_bugs.sort(key=lambda b: b.get("last_seen_run_id", ""), reverse=False)
+        memory["known_bugs"] = known_bugs[-100:]
+
+    # ------------------------------------------------------------------
+    # 4. Run metadata
+    # ------------------------------------------------------------------
+    memory["total_runs"] = memory.get("total_runs", 0) + 1
+    memory["last_run_id"] = run_id
+
+    return memory
+
+
 # ---------------------------------------------------------------------------
-# Memory loading
+# Agent Skills (from agent_skills table — persistent learned patterns)
 # ---------------------------------------------------------------------------
 
-def load_app_memory(app_id: str, limit: int = 5) -> Dict[str, Any]:
-    """Load and merge recent memory entries for an app into a single context dict."""
-    try:
-        with _get_conn() as conn:
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                """
-                SELECT buggy_pages, effective_strategies, navigation_map,
-                       security_findings, run_summary
-                FROM agent_memory
-                WHERE app_id = %s
-                ORDER BY created_at DESC
-                LIMIT %s
-                """,
-                (app_id, limit),
-            )
-            rows = cur.fetchall()
-            cur.close()
-    except Exception as exc:
-        logger.error(f"load_app_memory failed: {exc}")
-        return {}
-
-    if not rows:
-        return {}
-
-    # Merge across recent runs
-    all_buggy_pages: Dict[str, Dict] = {}
-    all_strategies: List[Dict] = []
-    all_security: List[Dict] = []
-    run_summaries: List[str] = []
-
-    for row in rows:
-        # Buggy pages — aggregate by URL
-        for page in (row.get("buggy_pages") or []):
-            url = page.get("url", "")
-            if url in all_buggy_pages:
-                all_buggy_pages[url]["bug_count"] += page.get("bug_count", 0)
-                all_buggy_pages[url]["bug_types"] = list(
-                    set(all_buggy_pages[url]["bug_types"]) | set(page.get("bug_types", []))
-                )
-            else:
-                all_buggy_pages[url] = {
-                    "url": url,
-                    "bug_count": page.get("bug_count", 0),
-                    "bug_types": page.get("bug_types", []),
-                    "severities": page.get("severities", []),
-                }
-
-        all_strategies.extend(row.get("effective_strategies") or [])
-        all_security.extend(row.get("security_findings") or [])
-
-        if row.get("run_summary"):
-            run_summaries.append(row["run_summary"])
-
-    # Sort buggy pages by bug count descending
-    sorted_pages = sorted(all_buggy_pages.values(), key=lambda p: p["bug_count"], reverse=True)
-
-    return {
-        "all_buggy_pages": sorted_pages[:10],
-        "past_strategies": all_strategies[:10],
-        "security_findings": all_security[:10],
-        "run_summaries": run_summaries[:5],
-        "previous_bugs": get_previous_bugs_for_app(app_id, limit=30),
-    }
-
-
-# ---------------------------------------------------------------------------
-# Skills loading
-# ---------------------------------------------------------------------------
 
 def load_agent_skills(app_id: str, agent_type: str = "all", limit: int = 10) -> List[Dict[str, Any]]:
     """Load relevant skills for an agent. Combines app-specific + global skills."""
@@ -165,110 +227,10 @@ def load_agent_skills(app_id: str, agent_type: str = "all", limit: int = 10) -> 
         return []
 
 
-# ---------------------------------------------------------------------------
-# Memory saving (post-run)
-# ---------------------------------------------------------------------------
-
-def save_run_memory(run_id: str, app_id: str, final_state: Dict[str, Any]) -> None:
-    """Extract and save memory from a completed run."""
-    try:
-        bugs = final_state.get("bugs_found", [])
-        test_steps = final_state.get("test_steps", [])
-        report = final_state.get("report", [])
-
-        # Build buggy_pages grouped by page_url
-        page_bugs: Dict[str, Dict] = defaultdict(lambda: {"bug_count": 0, "bug_types": set(), "severities": set()})
-        for bug in bugs:
-            url = bug.get("page_url", "unknown")
-            page_bugs[url]["bug_count"] += 1
-            page_bugs[url]["bug_types"].add(bug.get("type", "unknown"))
-            page_bugs[url]["severities"].add(bug.get("severity", "medium"))
-
-        buggy_pages = [
-            {"url": url, "bug_count": d["bug_count"], "bug_types": list(d["bug_types"]), "severities": list(d["severities"])}
-            for url, d in page_bugs.items()
-        ]
-
-        # Build navigation_map
-        visited_urls = list({s.get("url") for s in test_steps if s.get("url")})
-        login_success = any(s.get("action") == "login_flow_completed" for s in test_steps)
-        navigation_map = {
-            "visited_urls": visited_urls,
-            "login_success": login_success,
-            "pages_explored": len(visited_urls),
-        }
-
-        # Build security_findings
-        security_findings = []
-        for bug in bugs:
-            if bug.get("type") == "security":
-                security_findings.append({
-                    "type": "xss" if "XSS" in bug.get("title", "") else "sqli" if "SQL" in bug.get("title", "") else "secret",
-                    "payload": bug.get("payload", ""),
-                    "selector": bug.get("selector", ""),
-                    "effective": True,
-                    "page_url": bug.get("page_url", ""),
-                })
-
-        # Build run summary
-        run_summary = _generate_run_summary(final_state)
-
-        with _get_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO agent_memory (app_id, run_id, buggy_pages, effective_strategies,
-                                          navigation_map, security_findings, run_summary)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    app_id,
-                    run_id,
-                    json.dumps(buggy_pages),
-                    json.dumps([]),  # strategies populated by skill extraction
-                    json.dumps(navigation_map),
-                    json.dumps(security_findings),
-                    run_summary,
-                ),
-            )
-            conn.commit()
-            cur.close()
-
-        logger.info(f"Saved run memory for run={run_id}, app={app_id}")
-    except Exception as exc:
-        logger.error(f"save_run_memory failed: {exc}", exc_info=True)
-
-
-def _generate_run_summary(final_state: Dict[str, Any]) -> str:
-    """Generate a concise run summary from final state."""
-    bugs = final_state.get("bugs_found", [])
-    steps = final_state.get("test_steps", [])
-    pages = len({s.get("url") for s in steps if s.get("url")})
-
-    bug_types = defaultdict(int)
-    severities = defaultdict(int)
-    for bug in bugs:
-        bug_types[bug.get("type", "unknown")] += 1
-        severities[bug.get("severity", "medium")] += 1
-
-    type_str = ", ".join(f"{count} {t}" for t, count in bug_types.items()) if bug_types else "none"
-    sev_str = ", ".join(f"{count} {s}" for s, count in severities.items()) if severities else "none"
-
-    return (
-        f"Explored {pages} page(s), found {len(bugs)} bug(s). "
-        f"Bug types: {type_str}. Severities: {sev_str}."
-    )
-
-
-# ---------------------------------------------------------------------------
-# Skills extraction (post-run)
-# ---------------------------------------------------------------------------
-
-def extract_and_save_skills(run_id: str, app_id: str, final_state: Dict[str, Any], memory: Dict[str, Any]) -> None:
+def extract_and_save_skills(run_id: str, app_id: str, final_state: Dict[str, Any]) -> None:
     """After a run, extract new skills or reinforce existing ones."""
     try:
         bugs = final_state.get("bugs_found", [])
-        previous_bugs = memory.get("previous_bugs", [])
 
         # Track page_url → bug_type patterns
         page_patterns: Dict[str, set] = defaultdict(set)
@@ -278,7 +240,6 @@ def extract_and_save_skills(run_id: str, app_id: str, final_state: Dict[str, Any
         with _get_conn() as conn:
             cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
 
-            # For each bug pattern, check if a matching skill exists
             for page_url, bug_types in page_patterns.items():
                 for bug_type in bug_types:
                     description = f"Page '{page_url}' tends to have {bug_type} bugs"
@@ -352,34 +313,6 @@ def extract_and_save_skills(run_id: str, app_id: str, final_state: Dict[str, Any
 # Prompt formatting helpers
 # ---------------------------------------------------------------------------
 
-def format_memory_for_prompt(memory: Dict[str, Any], max_items: int = 5) -> str:
-    """Format memory into a concise string for LLM prompt injection."""
-    if not memory:
-        return ""
-
-    sections = []
-
-    run_summaries = memory.get("run_summaries", [])
-    if run_summaries:
-        sections.append("## Previous Run History (same app):")
-        for s in run_summaries[:3]:
-            sections.append(f"- {s}")
-
-    buggy_pages = memory.get("all_buggy_pages", [])
-    if buggy_pages:
-        sections.append("\n## Previously Buggy Pages:")
-        for p in buggy_pages[:max_items]:
-            types = ", ".join(p.get("bug_types", []))
-            sections.append(f"- {p['url']}: {p['bug_count']} bug(s) ({types})")
-
-    security = memory.get("security_findings", [])
-    if security:
-        sections.append("\n## Past Security Findings:")
-        for f in security[:max_items]:
-            sections.append(f"- {f.get('type', 'unknown')} on {f.get('page_url', '?')}")
-
-    return "\n".join(sections) if sections else ""
-
 
 def format_skills_for_prompt(skills: List[Dict[str, Any]], agent_type: str = "all") -> str:
     """Format skills into a concise string for LLM prompt injection."""
@@ -396,3 +329,17 @@ def format_skills_for_prompt(skills: List[Dict[str, Any]], agent_type: str = "al
         lines.append(f"- [{conf:.0%} confidence] {skill['description']}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _origin(url: str) -> str:
+    """Return scheme://host for a URL, or the full URL if parsing fails."""
+    try:
+        p = urlparse(url)
+        return f"{p.scheme}://{p.netloc}"
+    except Exception:
+        return url
