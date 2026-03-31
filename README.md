@@ -150,7 +150,12 @@ psql postgresql://postgres:postgres@localhost:5432/bughunter \
   -f database/migrations/001_users.sql \
   -f database/migrations/002_apps.sql \
   -f database/migrations/003_test_runs.sql \
-  -f database/migrations/004_bug_reports.sql
+  -f database/migrations/004_bug_reports.sql \
+  -f database/migrations/005_not_null_constraints.sql \
+  -f database/migrations/006_credentials_text.sql \
+  -f database/migrations/007_app_memory.sql \
+  -f database/migrations/007_agent_memory.sql \
+  -f database/migrations/008_run_status_enum.sql
 ```
 
 **Windows (PowerShell):**
@@ -301,16 +306,67 @@ Since these are branching flows, register the app **twice** — once for each us
 Analyzes the target URL, credentials, app memory, and `test_config`. Produces **JSON** (`pages`, `user_journeys`, `focus_areas`, `notes`) stored as **`strategic_plan`** and used by the Explorer for URL priority and prompts.
 
 ### ExplorerAgent
-Playwright navigation (`domcontentloaded`). Merges **strategic plan URLs** with memory-driven bug-prone pages. Per page: screenshot, LLM “what to test” (plan-aware), `observe` / `errors_detected` steps. Records **`visited_urls`** for Security. Page cap: `AGENT_MAX_PAGES` / `test_config.max_pages` (default 5).
+Playwright navigation (`domcontentloaded`). Merges **strategic plan URLs** with memory-driven bug-prone pages. Per page: screenshot, LLM “what to test” (plan-aware), `observe` / `errors_detected` steps. Records **`visited_urls`** for Security. Page cap: `AGENT_MAX_PAGES` / `test_config.max_pages` (default 5). Also runs **form fuzzing** (edge-case payloads: empty, long strings, unicode, special characters, script tags, SQL quotes), **performance checks** (Navigation Timing API: load time, TTFB), and **accessibility audits** (missing alt text, unlabeled inputs, inaccessible buttons, heading level skips, missing lang attribute).
 
 ### ValidatorAgent
-Iterates `test_steps` with `action` in `observe` or `errors_detected` and asks the LLM to list functional/UI/data issues. Strips screenshot `base64` from state after validation.
+Iterates `test_steps` with `action` in `observe` or `errors_detected` and asks the LLM to list functional/UI/data issues. **Vision analysis** sends screenshots as multimodal images to the LLM, detecting visual bugs like broken layouts, missing images, text overflow, and misalignment. Checks known bugs from `app_memory` for regression detection. Strips screenshot `base64` from state after validation.
 
 ### SecurityAgent
-Runs XSS/SQLi/secret scans on the **seed URL plus `visited_urls`**, deduped and capped by **`SECURITY_MAX_URLS`** (default 6). One browser session per target URL.
+Runs XSS/SQLi/secret scans on the **seed URL plus `visited_urls`**, deduped and capped by **`SECURITY_MAX_URLS`** (default 6). Uses **adaptive payloads** from app memory and skills to prioritize previously effective attack vectors. Also checks **HTTP security headers** (HSTS, CSP, X-Frame-Options, X-Content-Type-Options), **cookie security** (HttpOnly, Secure, SameSite flags), and **CSRF protection** (form token detection).
 
 ### ReporterAgent
-**Deduplicates** raw `bugs_found` by fingerprint, then uses the LLM to produce structured reports (title, description, steps, severity, regression vs app memory).
+**Deduplicates** raw `bugs_found` using both fingerprint matching and **semantic similarity** (title/description similarity >= 0.70 via SequenceMatcher), then uses the LLM to produce structured reports (title, description, steps, severity, regression vs app memory).
+
+---
+
+## 🧠 Agent Self-Improvement
+
+BugHunter.AI features a **dual memory system** that makes agents smarter with each consecutive run:
+
+### App Memory (`app_memory` table)
+Per-app JSONB blob that persists across runs. Stores:
+- **Known bugs** with fingerprints (SHA-256 of title + page_url) for regression detection
+- **Page priority scores** — bug-prone pages get higher exploration priority
+- **Login steps** — successful login flows are replayed on subsequent runs
+- **Run metadata** — total runs, timestamps, navigation maps
+
+### Agent Skills (`agent_skills` table)
+Structured skill records learned from successful runs:
+- **Bug patterns** — page_url-to-bug_type mappings with confidence scores
+- **Effective security payloads** — XSS/SQLi payloads that found real vulnerabilities
+- Skills are **app-specific** or **global** (shared across all apps)
+- Confidence increases (+0.1) each time a skill proves effective
+
+### How It Works
+1. Before each run, memory and skills are loaded and injected into agent state
+2. **Orchestrator** uses memory to inform strategic planning
+3. **Explorer** prioritizes bug-prone pages from memory
+4. **Security** uses adaptive payloads from skills
+5. **Validator** checks against known bugs for regression detection
+6. **Reporter** tags bugs as regressions if fingerprints match known bugs
+7. After a successful run, memory is updated and new skills are extracted
+
+---
+
+## 🛡️ Backend Reliability
+
+| Feature | Description |
+|---------|-------------|
+| **Global Rate Limiting** | 100 requests per 15 minutes per IP on all `/api/` routes (configurable via `RATE_LIMIT_MAX`) |
+| **Queue Heartbeat** | Agent writes a Redis heartbeat every 30s while processing a run |
+| **Stale Run Reaper** | Backend checks every 60s for "running" jobs with expired heartbeats and marks them as failed |
+| **Structured Logging** | JSON-formatted request logs with method, path, status, duration, IP |
+| **Deep Health Check** | `/health` endpoint verifies DB and Redis connectivity, returns uptime |
+| **Request Logging** | Every request logged with duration and status code classification |
+
+---
+
+## 🎨 Frontend Resilience
+
+| Feature | Description |
+|---------|-------------|
+| **Error Boundary** | React class component catches render errors with a recovery UI (Try Again / Reload) |
+| **Toast Notifications** | Global notification system via `useNotification()` hook — success, error, warning, info toasts with auto-dismiss |
 
 ---
 
@@ -364,6 +420,18 @@ users ──────────────── apps ──────�
                         │ updated_at             │ summary       │ status
                                                  │ error         │ screenshot_url
                                                  │ created_at    │ page_url
+
+app_memory ─────────── agent_skills
+  │                       │
+  │ app_id (FK, PK)       │ id (UUID PK)
+  │ data (JSONB)          │ app_id (FK, nullable)
+  │ updated_at            │ agent_type
+                          │ skill_type
+                          │ description
+                          │ skill_data (JSONB)
+                          │ confidence (float)
+                          │ times_used / times_effective
+                          │ created_at / updated_at
 ```
 
 ---

@@ -159,15 +159,15 @@ You are redirected to the Bug Reports page for that run where you can watch resu
 Once a run starts, the LangGraph agent pipeline executes automatically (fixed order, no branching):
 
 ```
-OrchestratorAgent  →  LLM JSON plan (pages, journeys, focus) — drives Explorer priorities
+OrchestratorAgent  →  LLM JSON plan (pages, journeys, focus) — drives Explorer priorities; uses app memory + skills
        ↓
-ExplorerAgent      →  Playwright navigation, screenshots, console/network errors; records visited URLs
+ExplorerAgent      →  Playwright navigation, screenshots, console/network errors; form fuzzing, perf checks, a11y audits; records visited URLs
        ↓
-ValidatorAgent     →  LLM review of `observe` / `errors_detected` steps for functional issues
+ValidatorAgent     →  LLM review of `observe` / `errors_detected` steps + multimodal vision analysis of screenshots; regression detection
        ↓
-SecurityAgent      →  XSS / SQLi / secret patterns on the seed URL + visited URLs (capped)
+SecurityAgent      →  XSS / SQLi / secret patterns + HTTP header, cookie, CSRF checks; adaptive payloads from memory
        ↓
-ReporterAgent      →  deduplicates raw findings, then LLM structured bug reports to PostgreSQL
+ReporterAgent      →  semantic + fingerprint deduplication, then LLM structured bug reports to PostgreSQL
 ```
 
 The run’s **summary** JSON in PostgreSQL can include `strategic_plan`, `visited_urls`, `dedupe_stats`, and `pipeline_log` for debugging and tuning.
@@ -284,11 +284,13 @@ The image may still be pulling on first run. Wait 60 seconds and retry.
 - **Use "What to test"** to direct the agent: `"Test the client listing — search, filter, and pagination"`
 - **Use "Focus areas"** for targeted scanning: `"authentication, forms, data display"`
 - **Increase pages** for deeper coverage — set to 10–15 for production apps
-- **Run multiple times** targeting different parts of the app — each run is independent
+- **Run multiple times** targeting different parts of the app — each run is independent and builds on memory from previous runs
 - **DVWA Low difficulty** produces the most findings as security controls are disabled
 - **Juice Shop** has over 100 challenges — each run will likely surface different issues
 - **Enterprise apps**: register once per user type (SSO user / non-SSO user) with their respective credentials
 - **Quick mode** is the default — enable "Detailed AI report" only when you need structured steps-to-reproduce per bug (it adds LLM enrichment time)
+- **Self-improvement:** Each run builds memory — known bugs, login steps, page priority scores, and effective security payloads are carried over to the next run. Consecutive runs on the same app get progressively smarter.
+- **Clear memory** if you want a fresh start: use `DELETE /api/apps/:id/memory` or the memory management UI
 
 ---
 
