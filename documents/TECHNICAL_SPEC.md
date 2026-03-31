@@ -1,6 +1,6 @@
 # BugHunter.AI — Technical Specification
 
-> Version: 1.3 | Date: 2026-03-30 | Codebase: `bughunter-ai`
+> Version: 1.4 | Date: 2026-03-31 | Codebase: `bughunter-ai`
 
 ---
 
@@ -132,6 +132,8 @@ bughunter-ai/
 │       │   ├── apps.routes.js
 │       │   ├── runs.routes.js
 │       │   └── bugs.routes.js
+│       ├── jobs/
+│       │   └── staleRunReaper.js     # Background reaper for ghost runs
 │       └── queue/
 │           └── testQueue.js          # BullMQ Queue + raw Redis list
 │
@@ -147,7 +149,8 @@ bughunter-ai/
 │       │   └── api.js                # Axios client with interceptors
 │       ├── context/
 │       │   ├── AuthContext.jsx       # Auth state + login/register/logout
-│       │   └── SidebarContext.jsx    # Collapsed sidebar state
+│       │   ├── SidebarContext.jsx    # Collapsed sidebar state
+│       │   └── NotificationContext.jsx # Global toast notifications
 │       ├── data/
 │       │   ├── agentProfiles.js      # Static copy for AI Agents page
 │       │   └── liveEventConfig.js    # SSE event type icons/colors (shared)
@@ -161,6 +164,7 @@ bughunter-ai/
 │           ├── AgentActivityLog.jsx  # Events grouped/filtered by agent
 │           ├── AgentProfiles.jsx     # /agents — cards for each pipeline agent
 │           ├── NewRunModal.jsx       # Modal to trigger a new run
+│           ├── ErrorBoundary.jsx      # React error boundary with recovery UI
 │           ├── AppHeader.jsx / AppFooter.jsx / UserProfile.jsx / ApiTesting.jsx
 │           └── ...
 │
@@ -1083,9 +1087,15 @@ The real password is **never sent to the LLM**. Works for:
 - Email-first pages (password appears on second page)
 - SSO/IDP redirects (Microsoft Entra, Okta, Google)
 
+**Additional per-page checks:**
+- **Form Fuzzing** (`_fuzz_forms()`): Tests up to 3 form inputs with edge-case payloads (empty string, 5000-char string, special characters, unicode, negative numbers, `<script>` tag, SQL single quote). Submits form and checks for error indicators in page source and console errors.
+- **Performance Checks** (`_check_performance()`): Uses Navigation Timing API via `page.evaluate()` to measure `dom_content_loaded`, `load_complete`, and `ttfb`. Flags pages with >5000ms load time or >2000ms TTFB.
+- **Accessibility Audits** (`_check_accessibility()`): Uses `page.evaluate()` to check for: images without alt text, form inputs without labels/aria-labels, buttons without accessible text, missing `<html lang>` attribute, heading level skips (e.g. h1 → h3).
+
 **Output mutations:**
 - `screenshots`: Array of `{ label, base64, url, timestamp, local_path }`
-- `test_steps`: Navigation steps, per-iteration smart login records, error observations
+- `test_steps`: Navigation steps, per-iteration smart login records, error observations, fuzz/perf/a11y results
+- `bugs_found`: Appended with form fuzzing, performance, and accessibility bugs
 - `current_page`: Last URL visited
 - `visited_urls`: Ordered list of URLs visited (used by SecurityAgent)
 
@@ -1093,11 +1103,13 @@ The real password is **never sent to the LLM**. Works for:
 
 #### ValidatorAgent (`agents/validator.py`)
 
-**Input:** `screenshots`, `test_steps`
+**Input:** `screenshots`, `test_steps`, `app_memory`
 
 **Process:**
+
+Phase 1 — Text-based analysis:
 1. Iterates `test_steps` looking for `action == "observe"` or `action == "errors_detected"`
-2. For each relevant step, calls LLM with step data and associated screenshot context
+2. For each relevant step, calls LLM with step data and known bug context from `app_memory.known_bugs`
 3. LLM identifies bugs from the categories:
    - HTTP 404 / 5xx errors
    - Broken layouts or missing UI elements
@@ -1107,25 +1119,46 @@ The real password is **never sent to the LLM**. Works for:
    - Incorrect or missing data
    - Accessibility violations
 
-**Note:** Strips `base64` from screenshots at this stage (retains `local_path`) to reduce state size.
+Phase 2 — Vision-based analysis:
+1. Iterates `screenshots` that have `base64` data
+2. Sends each screenshot as a **multimodal `HumanMessage`** with `image_url` content type
+3. LLM analyzes the visual screenshot for visual-only bugs:
+   - Broken or misaligned layouts
+   - Missing images or icons
+   - Text overflow or truncation
+   - Visual inconsistencies
+4. Filters out low-confidence results
+5. Checks `SIGNAL_STOP` between screenshots for cancellation support
+
+**Note:** Strips `base64` from screenshots after validation to reduce state size.
 
 **Output mutations:**
-- `bugs_found`: Appended with LLM-identified bug observations
+- `bugs_found`: Appended with both text-based and vision-identified bug observations
 
 ---
 
 #### SecurityAgent (`agents/security.py`)
 
-**Input:** `url`, **`visited_urls`** (from Explorer)
+**Input:** `url`, **`visited_urls`** (from Explorer), `app_memory`, `skills`
 
 **Target URLs:** Deduped list of `url` plus `visited_urls`, capped by **`SECURITY_MAX_URLS`** (default `6`; set in `agent/.env`).
 
-**Per URL:** One browser session runs XSS probes, then SQLi probes, then a regex **secret** scan on the final HTML. First 3 form inputs; 2 XSS payloads and 2 SQLi payloads per input (same payload sets as before).
+**Adaptive Payloads:** Before scanning, builds XSS and SQLi payload lists from:
+- Default hardcoded payloads
+- Previously effective payloads from `app_memory.known_bugs` (security type bugs)
+- Learned payloads from `agent_skills` table (skill_type = `effective_payload`)
+
+**Per URL:** One browser session runs XSS probes, then SQLi probes, then a regex **secret** scan on the final HTML. First 3 form inputs; adaptive XSS and SQLi payloads per input.
+
+**Additional checks** (run once on seed URL after URL scanning):
+- **HTTP Security Headers:** Checks for HSTS, X-Content-Type-Options, X-Frame-Options, Content-Security-Policy
+- **Cookie Security:** Checks HttpOnly, Secure (on HTTPS), SameSite flags on all cookies
+- **CSRF Protection:** Uses `page.evaluate()` to find POST forms missing CSRF tokens (checks for input names containing csrf/token/_token/authenticity_token)
 
 **Secret findings:** Severity **`high`** (not critical) with copy noting possible false positives.
 
 **Output mutations:**
-- `bugs_found`: Appended with security findings
+- `bugs_found`: Appended with security findings (XSS, SQLi, secrets, headers, cookies, CSRF)
 
 ---
 
@@ -1134,7 +1167,7 @@ The real password is **never sent to the LLM**. Works for:
 **Input:** `bugs_found`, `app_memory` (for regression fingerprints)
 
 **Process:**
-1. **`dedupe_bugs`** (`tools/bug_dedupe.py`) — removes duplicate observations by `make_fingerprint(title, page_url)`; records **`dedupe_stats`** `{ before, after, removed }`.
+1. **`dedupe_bugs`** (`tools/bug_dedupe.py`) — removes duplicate observations using both fingerprint matching and **semantic similarity** (SequenceMatcher, threshold 0.70 for titles and descriptions on same page/type); records **`dedupe_stats`** `{ before, after, removed, semantic_removed }`.
 2. For each remaining entry, calls LLM with a structured prompt
 2. LLM returns a fully structured bug report with:
    - `title` — concise bug title
@@ -1207,12 +1240,21 @@ class JobRunner:
             'status': 'running',
             'report': None,
             'app_memory': load_memory(app_id) if app_id else {},
+            'skills': load_agent_skills(app_id, 'all') if app_id else [],
+            'app_id': app_id,
             'login_steps_for_memory': None,
             'strategic_plan': None,
             'visited_urls': None,
             'dedupe_stats': None,
         }
 ```
+
+**Heartbeat:** During pipeline execution, a background thread writes a Redis key `bughunter:heartbeat:{run_id}` every 30 seconds with a 90-second TTL. This allows the backend's stale run reaper to detect crashed workers.
+
+**Post-run memory/skills:** After a successful (non-cancelled) run:
+1. `extract_memory_updates(final_state, app_memory)` — updates login steps, page priority scores, known bug fingerprints, run metadata
+2. `save_memory(app_id, updated_memory)` — persists to `app_memory` table
+3. `extract_and_save_skills(run_id, app_id, final_state)` — extracts page→bug_type patterns and effective security payloads into `agent_skills` table
 
 **Redis job format:**
 ```json
@@ -1306,7 +1348,7 @@ def upload_to_s3(image_data, run_id: str, label: str) -> Optional[str]
 
 #### `tools/bug_dedupe.py` / `tools/pipeline_log.py` / `tools/json_utils.py`
 
-- **`dedupe_bugs(bugs)`** — fingerprint-based deduplication before ReporterAgent LLM calls.
+- **`dedupe_bugs(bugs)`** — three-tier deduplication: (1) exact fingerprint match, (2) same page + title similarity >= 0.70 via `SequenceMatcher`, (3) same page + same type + description similarity >= 0.70. Merges severity (keeps highest). Tracks `semantic_removed` count.
 - **`build_pipeline_log(test_steps)`** — compact step timeline stored in `test_runs.summary`.
 - **`extract_json_from_text(text)`** — used by OrchestratorAgent to parse strategic JSON.
 
@@ -1451,6 +1493,8 @@ Python runner.poll()
 | CREDENTIALS_ENCRYPTION_KEY | Yes | 64-char hex string (32 bytes) |
 | FRONTEND_URL | Yes | CORS allowed origin |
 | AGENT_API_SECRET | Yes | Shared secret for agent auth |
+| LOG_LEVEL | No (default info) | Winston log level (error/warn/info/debug) |
+| RATE_LIMIT_MAX | No (default 100) | Max API requests per 15 minutes per IP |
 | KF_EMAIL | No | Email for Korn Ferry Talent auto-registration on startup |
 | KF_IDP_PASSWORD | No | IDP password for Korn Ferry Talent auto-registration on startup |
 
@@ -1486,8 +1530,9 @@ openssl rand -hex 32
 
 ### 10.3 Rate Limiting
 
-- Auth routes (`/api/auth/*`): 20 requests per 15 minutes per IP
-- All other routes: No explicit limit (backend inherits express defaults)
+- **Global API limiter** (`/api/*`): 100 requests per 15 minutes per IP (configurable via `RATE_LIMIT_MAX` env var)
+- Auth routes (`/api/auth/*`): Stricter — 20 requests per 15 minutes per IP
+- Health endpoint (`/health`): Excluded from rate limiting
 
 ### 10.4 Input Validation
 
@@ -1579,7 +1624,17 @@ Convenience script that launches all three services in separate PowerShell windo
 | Screenshot storage | Configure S3 to avoid local disk accumulation |
 | Secrets rotation | Use `database/scripts/re_encrypt_credentials.js` to re-encrypt after key rotation |
 | Monitoring | Add Bull Board (`@bull-board/express`) for queue visibility |
+| Rate limiting | Tune `RATE_LIMIT_MAX` env var for production traffic patterns |
+| Logging | Set `LOG_LEVEL=warn` in production to reduce log volume; logs are structured JSON |
+
+### Observability
+
+**Request logging:** Every HTTP request is logged with method, path, status code, duration (ms), and client IP. Status >= 500 logged as `error`, >= 400 as `warn`.
+
+**Deep health check:** `GET /health` probes PostgreSQL (`SELECT 1`) and Redis (`PING`). Returns `503` with `status: "degraded"` if either fails, including uptime in seconds.
+
+**Stale run reaper** (`backend/src/jobs/staleRunReaper.js`): Runs every 60 seconds. Finds runs in `running` status older than 3 minutes, checks their Redis heartbeat key (`bughunter:heartbeat:{run_id}`). If the heartbeat is missing or stale (> 90s), marks the run as `failed` with a descriptive error message. Prevents ghost runs when agent workers crash.
 
 ---
 
-*Document maintained against the BugHunter.AI source code. Last updated: 2026-03-29.*
+*Document maintained against the BugHunter.AI source code. Last updated: 2026-03-31.*

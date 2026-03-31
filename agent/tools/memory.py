@@ -1,6 +1,6 @@
 """
-BugHunter.AI - App Memory
-Per-app persistent memory stored in PostgreSQL.
+BugHunter.AI - Memory & Skills Service
+Per-app persistent memory stored in PostgreSQL, plus agent skills for self-improvement.
 
 Loads before each run, updated after each successful run.
 All functions are safe on first run (no row yet → returns {}).
@@ -10,8 +10,11 @@ import copy
 import hashlib
 import json
 import logging
+from collections import defaultdict
 from typing import Any, Dict, List
 from urllib.parse import urlparse
+
+import psycopg2.extras
 
 from tools.storage import _get_conn  # reuse the existing connection pool
 
@@ -19,7 +22,7 @@ logger = logging.getLogger("bughunter.memory")
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# App Memory (JSONB blob per app — from app_memory table)
 # ---------------------------------------------------------------------------
 
 
@@ -123,9 +126,6 @@ def extract_memory_updates(state: Dict[str, Any], existing_memory: dict) -> dict
             "failure_count": 0,
         }
     elif memory.get("login", {}).get("working_steps"):
-        # Memory-based login was attempted.
-        # If smart_login_completed appears in test_steps it means stored steps
-        # failed and the agent fell back to smart login.
         had_smart_fallback = any(
             s.get("action") == "smart_login_completed"
             for s in (state.get("test_steps") or [])
@@ -185,6 +185,150 @@ def extract_memory_updates(state: Dict[str, Any], existing_memory: dict) -> dict
     memory["last_run_id"] = run_id
 
     return memory
+
+
+# ---------------------------------------------------------------------------
+# Agent Skills (from agent_skills table — persistent learned patterns)
+# ---------------------------------------------------------------------------
+
+
+def load_agent_skills(app_id: str, agent_type: str = "all", limit: int = 10) -> List[Dict[str, Any]]:
+    """Load relevant skills for an agent. Combines app-specific + global skills."""
+    try:
+        with _get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            if agent_type == "all":
+                cur.execute(
+                    """
+                    SELECT agent_type, skill_type, description, skill_data, confidence
+                    FROM agent_skills
+                    WHERE app_id = %s OR app_id IS NULL
+                    ORDER BY confidence DESC, times_effective DESC
+                    LIMIT %s
+                    """,
+                    (app_id, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT agent_type, skill_type, description, skill_data, confidence
+                    FROM agent_skills
+                    WHERE (app_id = %s OR app_id IS NULL) AND agent_type = %s
+                    ORDER BY confidence DESC, times_effective DESC
+                    LIMIT %s
+                    """,
+                    (app_id, agent_type, limit),
+                )
+            rows = cur.fetchall()
+            cur.close()
+            return [dict(r) for r in rows]
+    except Exception as exc:
+        logger.error(f"load_agent_skills failed: {exc}")
+        return []
+
+
+def extract_and_save_skills(run_id: str, app_id: str, final_state: Dict[str, Any]) -> None:
+    """After a run, extract new skills or reinforce existing ones."""
+    try:
+        bugs = final_state.get("bugs_found", [])
+
+        # Track page_url → bug_type patterns
+        page_patterns: Dict[str, set] = defaultdict(set)
+        for bug in bugs:
+            page_patterns[bug.get("page_url", "")].add(bug.get("type", "unknown"))
+
+        with _get_conn() as conn:
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+            for page_url, bug_types in page_patterns.items():
+                for bug_type in bug_types:
+                    description = f"Page '{page_url}' tends to have {bug_type} bugs"
+
+                    cur.execute(
+                        """
+                        SELECT id, times_used, times_effective, confidence
+                        FROM agent_skills
+                        WHERE app_id = %s AND skill_type = 'bug_pattern'
+                          AND skill_data->>'page_url' = %s AND skill_data->>'bug_type' = %s
+                        """,
+                        (app_id, page_url, bug_type),
+                    )
+                    existing = cur.fetchone()
+
+                    if existing:
+                        new_confidence = min(1.0, existing["confidence"] + 0.1)
+                        cur.execute(
+                            """
+                            UPDATE agent_skills
+                            SET times_used = times_used + 1,
+                                times_effective = times_effective + 1,
+                                confidence = %s,
+                                updated_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (new_confidence, existing["id"]),
+                        )
+                    else:
+                        cur.execute(
+                            """
+                            INSERT INTO agent_skills (app_id, agent_type, skill_type, description, skill_data, confidence)
+                            VALUES (%s, 'validator', 'bug_pattern', %s, %s, 0.5)
+                            """,
+                            (app_id, description, json.dumps({"page_url": page_url, "bug_type": bug_type})),
+                        )
+
+            # Save effective security payloads as skills
+            for bug in bugs:
+                if bug.get("type") == "security" and bug.get("payload"):
+                    payload = bug["payload"]
+                    sec_type = "xss" if "XSS" in bug.get("title", "") else "sqli"
+                    description = f"Effective {sec_type} payload: {payload[:50]}"
+
+                    cur.execute(
+                        """
+                        SELECT id FROM agent_skills
+                        WHERE app_id = %s AND skill_type = 'security_payload'
+                          AND skill_data->>'payload' = %s
+                        """,
+                        (app_id, payload),
+                    )
+                    if not cur.fetchone():
+                        cur.execute(
+                            """
+                            INSERT INTO agent_skills (app_id, agent_type, skill_type, description, skill_data, confidence)
+                            VALUES (%s, 'security', 'security_payload', %s, %s, 0.7)
+                            """,
+                            (app_id, description, json.dumps({"payload": payload, "type": sec_type})),
+                        )
+
+            conn.commit()
+            cur.close()
+
+        logger.info(f"Skills extracted for run={run_id}, app={app_id}")
+    except Exception as exc:
+        logger.error(f"extract_and_save_skills failed: {exc}", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Prompt formatting helpers
+# ---------------------------------------------------------------------------
+
+
+def format_skills_for_prompt(skills: List[Dict[str, Any]], agent_type: str = "all") -> str:
+    """Format skills into a concise string for LLM prompt injection."""
+    if not skills:
+        return ""
+
+    filtered = [s for s in skills if agent_type == "all" or s.get("agent_type") == agent_type]
+    if not filtered:
+        return ""
+
+    lines = ["## Learned Patterns:"]
+    for skill in filtered[:5]:
+        conf = skill.get("confidence", 0.5)
+        lines.append(f"- [{conf:.0%} confidence] {skill['description']}")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

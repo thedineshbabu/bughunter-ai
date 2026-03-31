@@ -41,6 +41,12 @@ class AgentState(TypedDict):
     # None when no memory exists yet (first run for this app).
     app_memory: Optional[Dict[str, Any]]
 
+    # Agent skills — learned patterns from agent_skills table
+    skills: Optional[List[Dict[str, Any]]]
+
+    # App ID for memory/skills lookups
+    app_id: Optional[str]
+
     # Login steps produced by a successful smart login this run.
     # Populated by ExplorerAgent; consumed by extract_memory_updates() to
     # persist the working flow so future runs can skip LLM login discovery.

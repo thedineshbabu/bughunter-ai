@@ -12,6 +12,7 @@ from graph.state import AgentState
 from providers import get_llm
 from tools.events import publish_event
 from tools.json_utils import extract_json_from_text
+from tools.memory import format_skills_for_prompt
 
 logger = logging.getLogger("bughunter.orchestrator")
 
@@ -73,6 +74,7 @@ class OrchestratorAgent:
         if max_pages:
             custom_section += f"\nThe explorer will visit up to {max_pages} page(s)."
 
+        # Build memory section from app_memory
         memory_section = ""
         app_memory = state.get("app_memory") or {}
         if app_memory.get("total_runs", 0) > 0:
@@ -94,6 +96,12 @@ class OrchestratorAgent:
                     for page_url, info in top_pages
                 )
                 memory_section += f"\nBug-prone pages to prioritise:\n{lines}"
+
+        # Build skills section from agent_skills table
+        skills = state.get("skills", [])
+        skills_section = format_skills_for_prompt(skills, agent_type="orchestrator")
+        if skills_section:
+            memory_section += f"\n\n{skills_section}"
 
         prompt = f"""You are a senior QA engineer. Define a testing strategy for this web application.
 

@@ -350,6 +350,187 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
 
         return shots
 
+    # ── Form Fuzzing ──────────────────────────────────────────────────────────
+    FUZZ_PAYLOADS = [
+        ("empty", ""),
+        ("long_string", "A" * 5000),
+        ("special_chars", "!@#$%^&*()_+-=[]{}|;':\",./<>?`~"),
+        ("unicode", "测试 émojis 🐛 Ñoño"),
+        ("negative_number", "-99999"),
+        ("script_tag", "<script>alert(1)</script>"),
+        ("sql_quote", "' OR '1'='1"),
+    ]
+
+    def _fuzz_forms(self, page_url: str, run_id: str) -> list:
+        """Test form inputs with edge-case values and record any errors."""
+        bugs = []
+        try:
+            inputs = self.browser.get_form_inputs()
+            if not inputs:
+                return bugs
+
+            # Test up to 3 inputs with up to 3 payloads each
+            for selector in inputs[:3]:
+                for label, payload in self.FUZZ_PAYLOADS[:3]:
+                    try:
+                        self.browser.fill_form(selector, payload)
+                    except Exception:
+                        continue
+
+                # Try submitting after filling with edge-case data
+                try:
+                    self.browser.click("button[type='submit'], input[type='submit']")
+                    self.browser.page.wait_for_timeout(1000)
+
+                    # Check for errors after submission
+                    console_errors = self.browser.get_console_errors()
+                    source = self.browser.get_page_source().lower()
+
+                    error_indicators = [
+                        "500 internal server error", "unhandled exception",
+                        "traceback", "fatal error", "uncaught typeerror",
+                        "cannot read properties of", "null reference",
+                    ]
+                    for indicator in error_indicators:
+                        if indicator in source:
+                            bugs.append({
+                                "type": "functional",
+                                "title": f"Form crashes with edge-case input on {selector}",
+                                "description": f"Submitting fuzz data to '{selector}' caused a server/client error: '{indicator}' detected in page.",
+                                "page_url": page_url,
+                                "severity": "high",
+                            })
+                            break
+
+                    if console_errors:
+                        js_errors = [e for e in console_errors if "error" in e.lower() or "uncaught" in e.lower()]
+                        if js_errors:
+                            bugs.append({
+                                "type": "error",
+                                "title": f"JS error after form submission on {selector}",
+                                "description": f"Console errors after submitting edge-case data: {js_errors[0][:200]}",
+                                "page_url": page_url,
+                                "severity": "medium",
+                            })
+
+                    # Navigate back for next test
+                    self.browser.navigate(page_url)
+                    self.browser.page.wait_for_timeout(500)
+                except Exception:
+                    try:
+                        self.browser.navigate(page_url)
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug(f"Form fuzzing failed on {page_url}: {exc}")
+        return bugs
+
+    # ── Performance & Accessibility Checks ─────────────────────────────────
+    def _check_performance(self, page_url: str) -> list:
+        """Check page load performance metrics via Playwright."""
+        bugs = []
+        try:
+            metrics = self.browser.page.evaluate("""
+                () => {
+                    const perf = performance.getEntriesByType('navigation')[0];
+                    if (!perf) return null;
+                    return {
+                        dom_content_loaded: Math.round(perf.domContentLoadedEventEnd - perf.startTime),
+                        load_complete: Math.round(perf.loadEventEnd - perf.startTime),
+                        ttfb: Math.round(perf.responseStart - perf.requestStart),
+                    };
+                }
+            """)
+            if metrics:
+                if metrics.get("load_complete", 0) > 5000:
+                    bugs.append({
+                        "type": "performance",
+                        "title": "Slow page load",
+                        "description": f"Page took {metrics['load_complete']}ms to fully load (threshold: 5000ms). "
+                                       f"TTFB: {metrics.get('ttfb', 0)}ms, DOMContentLoaded: {metrics.get('dom_content_loaded', 0)}ms.",
+                        "page_url": page_url,
+                        "severity": "medium",
+                    })
+                if metrics.get("ttfb", 0) > 2000:
+                    bugs.append({
+                        "type": "performance",
+                        "title": "Slow server response (TTFB)",
+                        "description": f"Time to first byte is {metrics['ttfb']}ms (threshold: 2000ms). Server may be under load or unoptimized.",
+                        "page_url": page_url,
+                        "severity": "medium",
+                    })
+        except Exception as exc:
+            logger.debug(f"Performance check failed on {page_url}: {exc}")
+        return bugs
+
+    def _check_accessibility(self, page_url: str) -> list:
+        """Run basic accessibility checks via DOM inspection."""
+        bugs = []
+        try:
+            a11y_issues = self.browser.page.evaluate("""
+                () => {
+                    const issues = [];
+                    // Images without alt text
+                    const imgs = document.querySelectorAll('img:not([alt])');
+                    if (imgs.length > 0) {
+                        issues.push({type: 'missing_alt', count: imgs.length, detail: 'Images missing alt text'});
+                    }
+                    // Form inputs without labels
+                    const inputs = document.querySelectorAll('input:not([type="hidden"]):not([type="submit"]):not([type="button"])');
+                    let unlabeled = 0;
+                    inputs.forEach(input => {
+                        const id = input.id;
+                        const hasLabel = id && document.querySelector(`label[for="${id}"]`);
+                        const hasAriaLabel = input.getAttribute('aria-label') || input.getAttribute('aria-labelledby');
+                        const hasPlaceholder = input.getAttribute('placeholder');
+                        if (!hasLabel && !hasAriaLabel && !hasPlaceholder) unlabeled++;
+                    });
+                    if (unlabeled > 0) {
+                        issues.push({type: 'unlabeled_input', count: unlabeled, detail: 'Form inputs without labels or aria-labels'});
+                    }
+                    // Buttons without accessible names
+                    const buttons = document.querySelectorAll('button');
+                    let emptyButtons = 0;
+                    buttons.forEach(btn => {
+                        if (!btn.textContent.trim() && !btn.getAttribute('aria-label') && !btn.querySelector('img[alt]')) {
+                            emptyButtons++;
+                        }
+                    });
+                    if (emptyButtons > 0) {
+                        issues.push({type: 'empty_button', count: emptyButtons, detail: 'Buttons without accessible text'});
+                    }
+                    // Missing lang attribute on html
+                    if (!document.documentElement.getAttribute('lang')) {
+                        issues.push({type: 'missing_lang', count: 1, detail: 'HTML element missing lang attribute'});
+                    }
+                    // Low contrast detection (basic: white text on light bg or dark on dark)
+                    // Heading hierarchy check
+                    const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+                    let skippedLevels = 0;
+                    for (let i = 1; i < headings.length; i++) {
+                        const prev = parseInt(headings[i-1].tagName[1]);
+                        const curr = parseInt(headings[i].tagName[1]);
+                        if (curr > prev + 1) skippedLevels++;
+                    }
+                    if (skippedLevels > 0) {
+                        issues.push({type: 'heading_skip', count: skippedLevels, detail: 'Heading levels are skipped (e.g., h1 to h3)'});
+                    }
+                    return issues;
+                }
+            """)
+            for issue in (a11y_issues or []):
+                severity = "medium" if issue["type"] in ("missing_alt", "unlabeled_input") else "low"
+                bugs.append({
+                    "type": "accessibility",
+                    "title": f"Accessibility: {issue['detail']}",
+                    "description": f"Found {issue['count']} instance(s) of {issue['detail']} on this page.",
+                    "page_url": page_url,
+                    "severity": severity,
+                })
+        except Exception as exc:
+            logger.debug(f"Accessibility check failed on {page_url}: {exc}")
+        return bugs
+
     @staticmethod
     def _extract_json(text: str) -> str:
         """Strip markdown fences and extract first JSON object or array from LLM output."""
@@ -532,6 +713,7 @@ Return only the JSON object, no explanation."""
 
         visited_urls = []
         pages_explored = 0
+        bugs_found = list(state.get("bugs_found", []))
         app_memory = state.get("app_memory") or {}
         strategic_plan = state.get("strategic_plan") or {}
         # Bug-prone pages from prior runs — used only to sort discovered links, not to guess URLs
@@ -627,6 +809,34 @@ Return only the JSON object, no explanation."""
                         "action": "page_actions_performed",
                         "detail": f"Executed {len(action_shots)} action(s) on this page",
                     })
+
+                # Performance checks
+                perf_bugs = self._check_performance(current_url)
+                if perf_bugs:
+                    test_steps.append({"agent": "explorer", "url": current_url, "action": "errors_detected",
+                                       "detail": f"Performance issues: {[b['title'] for b in perf_bugs]}"})
+                    for b in perf_bugs:
+                        bugs_found.append(b)
+                        publish_event(run_id, "bug_found", {"title": b["title"], "severity": b["severity"],
+                                                            "page_url": current_url, "message": f"[PERF] {b['title']}"})
+
+                # Accessibility checks
+                a11y_bugs = self._check_accessibility(current_url)
+                if a11y_bugs:
+                    test_steps.append({"agent": "explorer", "url": current_url, "action": "errors_detected",
+                                       "detail": f"Accessibility issues: {[b['title'] for b in a11y_bugs]}"})
+                    for b in a11y_bugs:
+                        bugs_found.append(b)
+
+                # Form fuzzing (edge-case input testing)
+                fuzz_bugs = self._fuzz_forms(current_url, run_id)
+                if fuzz_bugs:
+                    test_steps.append({"agent": "explorer", "url": current_url, "action": "errors_detected",
+                                       "detail": f"Form fuzzing issues: {[b['title'] for b in fuzz_bugs]}"})
+                    for b in fuzz_bugs:
+                        bugs_found.append(b)
+                        publish_event(run_id, "bug_found", {"title": b["title"], "severity": b["severity"],
+                                                            "page_url": current_url, "message": f"[FUZZ] {b['title']}"})
 
                 # -----------------------------------------------------------
                 # Login handling
@@ -834,6 +1044,7 @@ Return only the JSON object, no explanation."""
             "current_agent": "explorer",
             "screenshots": screenshots,
             "test_steps": test_steps,
+            "bugs_found": bugs_found,
             "current_page": visited_urls[-1] if visited_urls else url,
             "login_steps_for_memory": state.get("login_steps_for_memory"),
             "visited_urls": visited_urls,
