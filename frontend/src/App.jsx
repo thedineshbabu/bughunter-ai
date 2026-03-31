@@ -2,6 +2,8 @@ import React from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
 import { SidebarProvider, useSidebar } from './context/SidebarContext.jsx';
+import { NotificationProvider } from './context/NotificationContext.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import AppHeader from './components/AppHeader.jsx';
 import AppFooter from './components/AppFooter.jsx';
 import Sidebar from './components/Sidebar.jsx';
@@ -226,18 +228,22 @@ function ProtectedRoute({ children }) {
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login"    element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/"         element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/apps"     element={<ProtectedRoute><AppList /></ProtectedRoute>} />
-      <Route path="/runs"     element={<ProtectedRoute><TestRuns /></ProtectedRoute>} />
-      <Route path="/runs/:id" element={<ProtectedRoute><BugReports /></ProtectedRoute>} />
-      <Route path="/bugs"     element={<ProtectedRoute><BugList /></ProtectedRoute>} />
-      <Route path="/agents"   element={<ProtectedRoute><AgentProfiles /></ProtectedRoute>} />
-      <Route path="/apitest"  element={<ProtectedRoute><ApiTesting /></ProtectedRoute>} />
-      <Route path="/profile"  element={<ProtectedRoute><UserProfile /></ProtectedRoute>} />
-      <Route path="*"         element={<Navigate to="/" replace />} />
-    </Routes>
+    <ErrorBoundary>
+      <NotificationProvider>
+        <Routes>
+          <Route path="/login"    element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/"         element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/apps"     element={<ProtectedRoute><AppList /></ProtectedRoute>} />
+          <Route path="/runs"     element={<ProtectedRoute><TestRuns /></ProtectedRoute>} />
+          <Route path="/runs/:id" element={<ProtectedRoute><BugReports /></ProtectedRoute>} />
+          <Route path="/bugs"     element={<ProtectedRoute><BugList /></ProtectedRoute>} />
+          <Route path="/agents"   element={<ProtectedRoute><AgentProfiles /></ProtectedRoute>} />
+          <Route path="/apitest"  element={<ProtectedRoute><ApiTesting /></ProtectedRoute>} />
+          <Route path="/profile"  element={<ProtectedRoute><UserProfile /></ProtectedRoute>} />
+          <Route path="*"         element={<Navigate to="/" replace />} />
+        </Routes>
+      </NotificationProvider>
+    </ErrorBoundary>
   );
 }

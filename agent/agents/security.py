@@ -1,12 +1,14 @@
 """
 BugHunter.AI - SecurityAgent
-Performs active security testing: XSS, SQL injection, auth bypass, secret exposure.
+Performs active security testing: XSS, SQL injection, CSRF, IDOR,
+HTTP header security, cookie flags, auth bypass, secret exposure.
 Scans the seed URL plus URLs visited during exploration (capped).
 """
 
 import logging
 import os
 import re
+from urllib.parse import urlparse
 
 from graph.state import AgentState
 from tools.browser import BrowserTool
@@ -38,6 +40,14 @@ COMMON_SECRET_PATTERNS = [
     r"(?i)aws[_-]?(access[_-]?key|secret)\s*[=:]\s*['\"]?[\w/+=]{16,}",
 ]
 
+# Required HTTP security headers and expected values
+REQUIRED_SECURITY_HEADERS = {
+    "strict-transport-security": "HSTS header missing — site vulnerable to protocol downgrade attacks",
+    "x-content-type-options": "X-Content-Type-Options header missing — vulnerable to MIME sniffing",
+    "x-frame-options": "X-Frame-Options header missing — vulnerable to clickjacking",
+    "content-security-policy": "Content-Security-Policy header missing — no XSS mitigation via CSP",
+}
+
 SECURITY_MAX_URLS = int(os.environ.get("SECURITY_MAX_URLS", "6"))
 
 
@@ -60,6 +70,111 @@ class SecurityAgent:
 
     def __init__(self):
         self.browser = BrowserTool()
+
+    def _check_security_headers(self, url: str) -> list:
+        """Check for missing HTTP security headers via Playwright response."""
+        bugs = []
+        try:
+            self.browser.start()
+            response = self.browser.page.goto(url, wait_until="domcontentloaded")
+            if response:
+                headers = {k.lower(): v for k, v in response.headers.items()}
+                for header, message in REQUIRED_SECURITY_HEADERS.items():
+                    if header not in headers:
+                        bugs.append({
+                            "type": "security",
+                            "title": f"Missing Security Header: {header}",
+                            "description": message,
+                            "page_url": url,
+                            "severity": "medium",
+                        })
+        except Exception as exc:
+            logger.debug(f"Header check failed for {url}: {exc}")
+        finally:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+        return bugs
+
+    def _check_cookie_security(self, url: str) -> list:
+        """Check cookies for missing security flags (HttpOnly, Secure, SameSite)."""
+        bugs = []
+        try:
+            self.browser.start()
+            self.browser.navigate(url)
+            cookies = self.browser._context.cookies()
+            parsed = urlparse(url)
+            is_https = parsed.scheme == "https"
+
+            for cookie in cookies:
+                name = cookie.get("name", "")
+                issues = []
+                if not cookie.get("httpOnly", False):
+                    issues.append("HttpOnly")
+                if is_https and not cookie.get("secure", False):
+                    issues.append("Secure")
+                if cookie.get("sameSite", "None") == "None":
+                    issues.append("SameSite")
+
+                if issues:
+                    bugs.append({
+                        "type": "security",
+                        "title": f"Insecure Cookie: {name}",
+                        "description": f"Cookie '{name}' is missing flags: {', '.join(issues)}. "
+                                       f"This could expose the cookie to XSS theft or CSRF attacks.",
+                        "page_url": url,
+                        "severity": "medium" if "HttpOnly" in issues else "low",
+                    })
+        except Exception as exc:
+            logger.debug(f"Cookie check failed: {exc}")
+        finally:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+        return bugs
+
+    def _check_csrf(self, url: str) -> list:
+        """Check forms for missing CSRF tokens."""
+        bugs = []
+        try:
+            self.browser.start()
+            self.browser.navigate(url)
+            # Look for POST forms without CSRF tokens
+            forms_info = self.browser.page.evaluate("""
+                () => {
+                    const forms = document.querySelectorAll('form[method="post"], form[method="POST"], form:not([method])');
+                    return Array.from(forms).map(f => ({
+                        action: f.action,
+                        hasToken: !!(
+                            f.querySelector('input[name*="csrf"]') ||
+                            f.querySelector('input[name*="token"]') ||
+                            f.querySelector('input[name*="_token"]') ||
+                            f.querySelector('input[name="authenticity_token"]')
+                        ),
+                        inputCount: f.querySelectorAll('input').length,
+                    }));
+                }
+            """)
+            for form in (forms_info or []):
+                if not form.get("hasToken") and form.get("inputCount", 0) > 0:
+                    bugs.append({
+                        "type": "security",
+                        "title": "Potential CSRF Vulnerability",
+                        "description": f"Form posting to '{form.get('action', url)}' has no CSRF token. "
+                                       f"State-changing requests may be vulnerable to cross-site request forgery.",
+                        "page_url": url,
+                        "severity": "high",
+                    })
+        except Exception as exc:
+            logger.debug(f"CSRF check failed: {exc}")
+        finally:
+            try:
+                self.browser.close()
+            except Exception:
+                pass
+        return bugs
 
     def _secrets_from_source(self, source: str, page_url: str) -> list:
         bugs = []
@@ -223,6 +338,13 @@ class SecurityAgent:
         new_bugs: list = []
         for turl in targets:
             new_bugs.extend(self._scan_url(turl, xss_payloads, sqli_payloads))
+
+        # Run header, cookie, and CSRF checks on the seed URL only (avoid redundancy)
+        seed_url = state["url"]
+        publish_event(run_id, "agent_progress", {"agent": "security", "message": "Checking HTTP headers, cookies, and CSRF…"})
+        new_bugs.extend(self._check_security_headers(seed_url))
+        new_bugs.extend(self._check_cookie_security(seed_url))
+        new_bugs.extend(self._check_csrf(seed_url))
 
         if new_bugs:
             logger.info(f"SecurityAgent found {len(new_bugs)} security issue(s)")

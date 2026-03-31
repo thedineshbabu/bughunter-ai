@@ -7,6 +7,7 @@ saves results to PostgreSQL and notifies the backend via HTTP.
 import json
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -28,6 +29,8 @@ logger = logging.getLogger("bughunter.runner")
 
 QUEUE_KEY = "bughunter:jobs"
 POLL_TIMEOUT = 5  # seconds to block-wait for a job
+HEARTBEAT_INTERVAL = 30  # seconds between heartbeats
+HEARTBEAT_TTL = 90  # seconds before a heartbeat is considered stale
 
 
 class JobRunner:
@@ -107,6 +110,13 @@ class JobRunner:
 
         self._publish(run_id, "agent_start", {"agent": "orchestrator", "message": "Pipeline starting…"})
 
+        # Start heartbeat thread for this run
+        heartbeat_stop = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, args=(run_id, heartbeat_stop), daemon=True
+        )
+        heartbeat_thread.start()
+
         try:
             final_state = self.graph.invoke(initial_state)
             bug_count = len(final_state.get("bugs_found", []))
@@ -137,7 +147,26 @@ class JobRunner:
                 {**initial_state, "error": str(exc), "bugs_found": [], "report": []},
             )
         finally:
+            heartbeat_stop.set()
+            self._clear_heartbeat(run_id)
             clear_run_control(run_id)
+
+    def _heartbeat_loop(self, run_id: str, stop_event: threading.Event):
+        """Periodically set a Redis key to signal the run is still alive."""
+        key = f"bughunter:heartbeat:{run_id}"
+        while not stop_event.is_set():
+            try:
+                self.redis.setex(key, HEARTBEAT_TTL, int(time.time()))
+            except Exception as exc:
+                logger.debug(f"Heartbeat write failed for {run_id}: {exc}")
+            stop_event.wait(HEARTBEAT_INTERVAL)
+
+    def _clear_heartbeat(self, run_id: str):
+        """Remove the heartbeat key when a run finishes."""
+        try:
+            self.redis.delete(f"bughunter:heartbeat:{run_id}")
+        except Exception:
+            pass
 
     def _publish(self, run_id: str, event_type: str, data: dict):
         """Publish a pipeline progress event to Redis Pub/Sub."""
