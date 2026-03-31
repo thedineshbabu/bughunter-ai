@@ -36,20 +36,27 @@ Frontend → Backend API → Redis Queue (BullMQ + raw list)
                         Python Worker (main.py)
                                 ↓
                         LangGraph Agent Pipeline
-                        (orchestrator → explorer → validator → [security/reporter])
+                        (orchestrator → explorer → validator → security → reporter)
                                 ↓
-                        PostgreSQL (bugs_found, screenshots, reports)
+                        PostgreSQL (test_runs.summary JSON, bug_reports, app_memory)
                                 ↓
                         Backend API → Frontend (user views results)
 ```
 
 ### Agent Pipeline Flow
 
-- **OrchestratorAgent**: Analyzes target URL, plans test strategy
-- **ExplorerAgent**: Uses Playwright to navigate the app, takes screenshots
-- **ValidatorAgent**: Reviews screenshots/logs to find functional bugs
-- **SecurityAgent**: Runs active security tests (XSS, SQL injection, auth bypass)
-- **ReporterAgent**: Structures bug findings into reports
+Linear pipeline — every run executes all five agents in order.
+
+- **OrchestratorAgent**: LLM produces JSON strategic plan (`strategic_plan`); parsed via `tools/json_utils.py`
+- **ExplorerAgent**: Playwright exploration; merges plan URLs with memory priority list; sets `visited_urls`; `observe` / `errors_detected` steps for Validator; **form fuzzing** (edge-case payloads), **performance checks** (Navigation Timing API), **accessibility audits** (alt text, labels, headings, lang)
+- **ValidatorAgent**: Text-based LLM analysis of `observe` / `errors_detected` steps + **multimodal vision analysis** of screenshots for visual bugs; regression detection via `app_memory.known_bugs`; strips screenshot base64 after run
+- **SecurityAgent**: XSS/SQLi/secret scans on seed URL + `visited_urls` (see `SECURITY_MAX_URLS`); **adaptive payloads** from memory + skills; **HTTP header**, **cookie security**, and **CSRF** checks
+- **ReporterAgent**: `tools/bug_dedupe.dedupe_bugs` (fingerprint + **semantic similarity**) then LLM structured reports; regression tagging; `dedupe_stats` on state
+
+### Frontend (high level)
+
+- Run detail (`BugReports.jsx`): SSE live activity, `AgentPipelineTracker`, `AgentActivityLog`
+- Static `/agents` page: `AgentProfiles.jsx` + `data/agentProfiles.js`
 
 ---
 
@@ -62,7 +69,7 @@ Frontend → Backend API → Redis Queue (BullMQ + raw list)
 | **Job Queue** | Redis + BullMQ | Backend enqueues via BullMQ; Python worker polls raw Redis list |
 | **Backend** | Express + Node.js | PostgreSQL driver (`pg`), bcrypt for auth, JWT tokens |
 | **Frontend** | React + Vite | React Router for routing, Axios for API calls |
-| **Database** | PostgreSQL 15 | Tables: `users`, `apps`, `test_runs`, `bug_reports` |
+| **Database** | PostgreSQL 15 | Tables: `users`, `apps`, `test_runs`, `bug_reports`, `app_memory`, `agent_skills` |
 
 ---
 
@@ -80,7 +87,12 @@ psql postgresql://postgres:postgres@localhost:5432/bughunter \
   -f database/migrations/001_users.sql \
   -f database/migrations/002_apps.sql \
   -f database/migrations/003_test_runs.sql \
-  -f database/migrations/004_bug_reports.sql
+  -f database/migrations/004_bug_reports.sql \
+  -f database/migrations/005_not_null_constraints.sql \
+  -f database/migrations/006_credentials_text.sql \
+  -f database/migrations/007_app_memory.sql \
+  -f database/migrations/007_agent_memory.sql \
+  -f database/migrations/008_run_status_enum.sql
 
 # Windows (PowerShell):
 Get-Content database\migrations\001_users.sql | docker exec -i bughunter-postgres psql -U postgres -d bughunter
@@ -152,10 +164,14 @@ npm run preview # Preview production build
   - `reporter.py` - Structures findings into bug reports
 - **tools/screenshot.py** - Playwright screenshot capture and base64 encoding
 - **tools/storage.py** - S3 upload for screenshots (optional)
+- **tools/memory.py** - Per-app memory load/save, fingerprinting, page priority, skill extraction
+- **tools/bug_dedupe.py** - Semantic + fingerprint bug deduplication
+- **tools/control.py** - Redis-based run control signals (stop/pause/resume)
 
 ### Backend (`backend/src/`)
-- **index.js** - Express app setup; mounts routes, error handlers
+- **index.js** - Express app setup; mounts routes, error handlers, rate limiting, request logging
 - **queue/testQueue.js** - BullMQ Queue + raw Redis list for Python worker communication
+- **jobs/staleRunReaper.js** - Background reaper for ghost runs (heartbeat-based)
 - **config/db.js** - PostgreSQL connection pool
 - **config/redis.js** - Redis client
 - **middleware/auth.js** - JWT verification middleware
@@ -165,8 +181,10 @@ npm run preview # Preview production build
 - **routes/** - Express route definitions
 
 ### Frontend (`frontend/src/`)
-- **App.jsx** - Main router; defines Login, Register, ProtectedRoute, and page routes
+- **App.jsx** - Main router; defines Login, Register, ProtectedRoute, and page routes; wrapped in ErrorBoundary + NotificationProvider
 - **context/AuthContext.jsx** - React context for user auth state and login/register functions
+- **context/NotificationContext.jsx** - Global toast notification system (useNotification hook)
+- **components/ErrorBoundary.jsx** - React error boundary with recovery UI
 - **components/**:
   - `Dashboard.jsx` - Home page (quick stats)
   - `AppList.jsx` - CRUD for registered apps
@@ -207,16 +225,26 @@ Set `LLM_PROVIDER` in `agent/.env`. Each provider requires its API key:
 All agents receive/return `AgentState` (TypedDict in `graph/state.py`):
 ```python
 {
+  'run_id': str,
   'url': str,
   'credentials': Optional[Dict],
   'current_page': Optional[str],
-  'screenshots': List[Dict],  # {label, base64, url, timestamp}
-  'bugs_found': List[Dict],   # raw observations
-  'test_steps': List[Dict],   # {action, selector, value, result}
+  'screenshots': List[Dict],      # {label, base64, url, timestamp, local_path}
+  'screenshot_paths': List[str],
+  'bugs_found': List[Dict],       # raw observations
+  'test_steps': List[Dict],       # {action, selector, value, result}
   'current_agent': Optional[str],
   'error': Optional[str],
   'status': str,
-  'report': Optional[List[Dict]]  # final structured report
+  'test_config': Optional[Dict],
+  'report': Optional[List[Dict]], # final structured report
+  'app_memory': Dict,             # per-app memory blob (known bugs, page scores, login steps)
+  'skills': List[Dict],           # agent skills from agent_skills table
+  'app_id': Optional[str],
+  'login_steps_for_memory': Optional[List],
+  'strategic_plan': Optional[Dict],
+  'visited_urls': Optional[List[str]],
+  'dedupe_stats': Optional[Dict],
 }
 ```
 

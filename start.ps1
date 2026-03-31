@@ -156,7 +156,9 @@ $migrations = @(
     "database/migrations/003_test_runs.sql",
     "database/migrations/004_bug_reports.sql",
     "database/migrations/005_not_null_constraints.sql",
-    "database/migrations/006_credentials_text.sql"
+    "database/migrations/006_credentials_text.sql",
+    "database/migrations/007_app_memory.sql",
+    "database/migrations/008_run_status_enum.sql"
 )
 
 # Temporarily allow non-terminating errors so psql NOTICE/WARNING lines on stderr
@@ -402,7 +404,7 @@ try {
         -ContentType "application/json" -Body $body -UseBasicParsing -ErrorAction Stop
     Write-OK "Default account created"
 } catch {
-    $code = $_.Exception.Response.StatusCode.value__
+    $code = if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { 0 }
     if ($code -eq 409) {
         Write-OK "Default account already exists"
     } else {

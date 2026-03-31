@@ -1,12 +1,20 @@
 import React from 'react';
 import { Link, Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './context/AuthContext.jsx';
+import { SidebarProvider, useSidebar } from './context/SidebarContext.jsx';
+import { NotificationProvider } from './context/NotificationContext.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
+import AppHeader from './components/AppHeader.jsx';
+import AppFooter from './components/AppFooter.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import Dashboard from './components/Dashboard.jsx';
 import AppList from './components/AppList.jsx';
 import TestRuns from './components/TestRuns.jsx';
 import BugReports from './components/BugReports.jsx';
+import BugList from './components/BugList.jsx';
 import ApiTesting from './components/ApiTesting.jsx';
+import UserProfile from './components/UserProfile.jsx';
+import AgentProfiles from './components/AgentProfiles.jsx';
 
 // ── Shared input style ───────────────────────────────────────────────────────
 const inputStyle = {
@@ -30,7 +38,7 @@ function AuthShell({ children }) {
         {/* Brand header */}
         <header style={{ marginBottom: '2.5rem', textAlign: 'center' }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: '12px', marginBottom: '1rem' }}>
-            <div style={{ width: '40px', height: '40px', background: 'var(--primary)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
+            <div style={{ width: '40px', height: '40px', background: 'var(--primary-button)', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '8px' }}>
               <span className="material-symbols-outlined" style={{ color: '#fff', fontVariationSettings: "'FILL' 1" }}>security</span>
             </div>
             <span style={{ fontSize: '1.5rem', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--primary)' }}>BugHunter.AI</span>
@@ -75,7 +83,7 @@ function Login() {
 
   return (
     <AuthShell>
-      <div className="glass-card" style={{ borderRadius: '12px', padding: '2rem 2.5rem', borderLeft: '3px solid var(--primary)' }}>
+      <div className="glass-card" style={{ borderRadius: '8px', padding: '2rem 2.5rem', border: '1px solid var(--border-subtle)', borderLeft: '4px solid var(--secondary)' }}>
         {error && <ErrorBanner msg={error} />}
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           {/* Email */}
@@ -100,7 +108,7 @@ function Login() {
           </div>
           {/* CTA */}
           <div style={{ paddingTop: '4px' }}>
-            <button type="submit" disabled={loading} style={{ width: '100%', padding: '14px', background: 'linear-gradient(135deg, var(--primary), var(--primary-container))', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '0.95rem', fontWeight: 500, opacity: loading ? 0.7 : 1, letterSpacing: '0.01em' }}>
+            <button type="submit" disabled={loading} className="btn-primary" style={{ width: '100%', padding: '14px', fontSize: '0.95rem', opacity: loading ? 0.7 : 1 }}>
               {loading ? 'Signing in...' : 'Sign In'}
             </button>
           </div>
@@ -138,7 +146,7 @@ function Register() {
 
   return (
     <AuthShell>
-      <div className="glass-card" style={{ borderRadius: '12px', padding: '2rem 2.5rem', borderLeft: '3px solid var(--primary)' }}>
+      <div className="glass-card" style={{ borderRadius: '8px', padding: '2rem 2.5rem', border: '1px solid var(--border-subtle)', borderLeft: '4px solid var(--secondary)' }}>
         {error && <ErrorBanner msg={error} />}
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {[
@@ -154,7 +162,7 @@ function Register() {
             </div>
           ))}
           <div style={{ paddingTop: '4px' }}>
-            <button type="submit" disabled={loading} style={{ width: '100%', padding: '14px', background: 'linear-gradient(135deg, var(--primary), var(--primary-container))', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '0.95rem', fontWeight: 500, opacity: loading ? 0.7 : 1 }}>
+            <button type="submit" disabled={loading} className="btn-primary" style={{ width: '100%', padding: '14px', fontSize: '0.95rem', opacity: loading ? 0.7 : 1 }}>
               {loading ? 'Creating account...' : 'Create Account'}
             </button>
           </div>
@@ -168,38 +176,74 @@ function Register() {
   );
 }
 
+const SIDEBAR_EXPANDED = 260;
+const SIDEBAR_COLLAPSED = 72;
+
 // ── Protected Route ──────────────────────────────────────────────────────────
+function ProtectedShell({ children }) {
+  const { collapsed } = useSidebar();
+  const sidebarW = collapsed ? SIDEBAR_COLLAPSED : SIDEBAR_EXPANDED;
+
+  return (
+    <div style={{ minHeight: '100vh', background: 'var(--surface)' }}>
+      <AppHeader />
+      <Sidebar />
+      <div
+        className="app-main-shell"
+        style={{
+          marginLeft: sidebarW,
+          paddingTop: 'var(--header-height)',
+          minHeight: '100vh',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <main style={{ flex: 1, padding: '2rem 2.5rem', overflowY: 'auto', maxWidth: '1400px', width: '100%', margin: '0 auto' }}>
+          {children}
+        </main>
+        <div style={{ padding: '0 2.5rem 1.5rem', maxWidth: '1400px', width: '100%', margin: '0 auto' }}>
+          <AppFooter />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
   if (loading) return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--on-surface-variant)', fontSize: '0.875rem', gap: '8px' }}>
-      <span className="material-symbols-outlined" style={{ color: 'var(--secondary)' }}>autorenew</span>
+      <span className="material-symbols-outlined" style={{ color: 'var(--link)' }}>autorenew</span>
       Loading...
     </div>
   );
   if (!user) return <Navigate to="/login" replace />;
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--surface)' }}>
-      <Sidebar />
-      <main style={{ marginLeft: '256px', minHeight: '100vh', padding: '2rem 2.5rem', overflowY: 'auto' }}>
-        {children}
-      </main>
-    </div>
+    <SidebarProvider>
+      <ProtectedShell>{children}</ProtectedShell>
+    </SidebarProvider>
   );
 }
 
 // ── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login"    element={<Login />} />
-      <Route path="/register" element={<Register />} />
-      <Route path="/"         element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-      <Route path="/apps"     element={<ProtectedRoute><AppList /></ProtectedRoute>} />
-      <Route path="/runs"     element={<ProtectedRoute><TestRuns /></ProtectedRoute>} />
-      <Route path="/runs/:id" element={<ProtectedRoute><BugReports /></ProtectedRoute>} />
-      <Route path="/apitest"  element={<ProtectedRoute><ApiTesting /></ProtectedRoute>} />
-      <Route path="*"         element={<Navigate to="/" replace />} />
-    </Routes>
+    <ErrorBoundary>
+      <NotificationProvider>
+        <Routes>
+          <Route path="/login"    element={<Login />} />
+          <Route path="/register" element={<Register />} />
+          <Route path="/"         element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+          <Route path="/apps"     element={<ProtectedRoute><AppList /></ProtectedRoute>} />
+          <Route path="/runs"     element={<ProtectedRoute><TestRuns /></ProtectedRoute>} />
+          <Route path="/runs/:id" element={<ProtectedRoute><BugReports /></ProtectedRoute>} />
+          <Route path="/bugs"     element={<ProtectedRoute><BugList /></ProtectedRoute>} />
+          <Route path="/agents"   element={<ProtectedRoute><AgentProfiles /></ProtectedRoute>} />
+          <Route path="/apitest"  element={<ProtectedRoute><ApiTesting /></ProtectedRoute>} />
+          <Route path="/profile"  element={<ProtectedRoute><UserProfile /></ProtectedRoute>} />
+          <Route path="*"         element={<Navigate to="/" replace />} />
+        </Routes>
+      </NotificationProvider>
+    </ErrorBoundary>
   );
 }

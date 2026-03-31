@@ -1,6 +1,10 @@
 import { query } from '../config/db.js';
 import { enqueueTestRun } from '../queue/testQueue.js';
 import { decrypt } from '../lib/crypto.js';
+import client from '../config/redis.js';
+
+const CONTROL_KEY = (runId) => `bughunter:control:${runId}`;
+const CONTROL_TTL = 3600; // seconds
 
 /** GET /api/runs */
 export async function listRuns(req, res, next) {
@@ -54,7 +58,7 @@ export async function listRuns(req, res, next) {
 /** POST /api/runs */
 export async function createRun(req, res, next) {
   try {
-    const { app_id } = req.body;
+    const { app_id, test_config } = req.body;
 
     // Verify app belongs to user
     const appResult = await query(
@@ -80,7 +84,7 @@ export async function createRun(req, res, next) {
     const plainCredentials = decrypt(app.credentials);
 
     // Enqueue job for the Python agent
-    await enqueueTestRun(run.id, app.url, plainCredentials);
+    await enqueueTestRun(run.id, app_id, app.url, plainCredentials, test_config || null);
 
     res.status(201).json({ run });
   } catch (err) {
@@ -124,7 +128,7 @@ export async function updateRun(req, res, next) {
        SET status    = $1,
            summary   = COALESCE($2, summary),
            error     = COALESCE($3, error),
-           completed_at = CASE WHEN $1 IN ('completed','failed') THEN NOW() ELSE completed_at END
+           completed_at = CASE WHEN $1::text IN ('completed','failed','cancelled') THEN NOW() ELSE completed_at END
        WHERE id = $4
        RETURNING id, status, summary, error, completed_at`,
       [status, summary ?? null, error ?? null, req.params.id]
@@ -134,6 +138,65 @@ export async function updateRun(req, res, next) {
       return res.status(404).json({ error: 'Run not found' });
     }
 
+    res.json({ run: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/runs/:id/stop — send stop signal and mark run as cancelled */
+export async function stopRun(req, res, next) {
+  try {
+    const result = await query(
+      `UPDATE test_runs
+       SET status = 'cancelled', completed_at = NOW()
+       WHERE id = $1 AND user_id = $2 AND status IN ('pending','running','paused')
+       RETURNING id, status`,
+      [req.params.id, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Run not found or already finished' });
+    }
+    // Signal the agent worker to stop after its current page
+    await client.set(CONTROL_KEY(req.params.id), 'stop', { EX: CONTROL_TTL });
+    res.json({ run: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/runs/:id/pause — send pause signal and mark run as paused */
+export async function pauseRun(req, res, next) {
+  try {
+    const result = await query(
+      `UPDATE test_runs SET status = 'paused'
+       WHERE id = $1 AND user_id = $2 AND status = 'running'
+       RETURNING id, status`,
+      [req.params.id, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Run not found or not currently running' });
+    }
+    await client.set(CONTROL_KEY(req.params.id), 'pause', { EX: CONTROL_TTL });
+    res.json({ run: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/runs/:id/resume — clear pause signal and mark run as running */
+export async function resumeRun(req, res, next) {
+  try {
+    const result = await query(
+      `UPDATE test_runs SET status = 'running'
+       WHERE id = $1 AND user_id = $2 AND status = 'paused'
+       RETURNING id, status`,
+      [req.params.id, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Run not found or not paused' });
+    }
+    await client.del(CONTROL_KEY(req.params.id));
     res.json({ run: result.rows[0] });
   } catch (err) {
     next(err);
