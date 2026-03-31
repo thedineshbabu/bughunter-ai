@@ -33,3 +33,8 @@ class AgentState(TypedDict):
 
     # Final structured report (populated by ReporterAgent)
     report: Optional[List[Dict[str, Any]]]
+
+    # Memory & Skills (populated by runner before pipeline starts)
+    memory: Optional[Dict[str, Any]]       # Historical context for this app
+    skills: Optional[List[Dict[str, Any]]] # Relevant learned patterns
+    app_id: Optional[str]                  # App ID for memory lookups

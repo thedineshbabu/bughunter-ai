@@ -14,6 +14,7 @@ from graph.state import AgentState
 from providers import get_llm
 from tools.browser import BrowserTool
 from tools.events import publish_event
+from tools.memory import format_memory_for_prompt
 from tools.screenshot import capture
 
 logger = logging.getLogger("bughunter.explorer")
@@ -29,15 +30,27 @@ class ExplorerAgent:
         self.browser = BrowserTool()
         self._login_done = False
 
-    def _ask_what_to_test(self, page_title: str, page_url: str, source_snippet: str) -> str:
+    def _ask_what_to_test(self, page_title: str, page_url: str, source_snippet: str, memory: dict = None) -> str:
         """Ask the LLM what actions to perform on the current page."""
+        history_note = ""
+        if memory:
+            buggy_pages = memory.get("all_buggy_pages", [])
+            page_history = [p for p in buggy_pages if p.get("url") == page_url]
+            if page_history:
+                p = page_history[0]
+                types = ", ".join(p.get("bug_types", []))
+                history_note = (
+                    f"\nIMPORTANT: This page had {p['bug_count']} bug(s) in previous runs "
+                    f"(types: {types}). Focus testing on those areas and look for regressions.\n"
+                )
+
         prompt = f"""You are a QA automation engineer exploring a web app.
 
 Current page: {page_url}
 Page title: {page_title}
 HTML snippet (first 2000 chars):
 {source_snippet[:2000]}
-
+{history_note}
 List the top 3 actions to perform on this page to discover bugs.
 Format: JSON array of objects with keys: action (click/fill/navigate), selector, value (optional), reason
 """
@@ -122,11 +135,15 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
         url = state["url"]
         run_id = state.get("run_id")
         credentials = state.get("credentials") or {}
+        memory = state.get("memory") or {}
         screenshots = list(state.get("screenshots", []))
         test_steps = list(state.get("test_steps", []))
 
         visited_urls = []
         pages_explored = 0
+
+        # Build set of previously buggy URLs for prioritized exploration
+        buggy_urls = {p["url"] for p in memory.get("all_buggy_pages", []) if p.get("url")}
 
         publish_event(run_id, "agent_start", {"agent": "explorer", "message": "Browser exploration starting…"})
 
@@ -162,8 +179,8 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
 
                 publish_event(run_id, "page_visited", {"url": current_url, "page": pages_explored, "title": page_title, "message": f"Exploring: {current_url}"})
 
-                # Ask the LLM what to test
-                actions_json = self._ask_what_to_test(page_title, current_url, source)
+                # Ask the LLM what to test (with memory context)
+                actions_json = self._ask_what_to_test(page_title, current_url, source, memory)
                 test_steps.append(
                     {
                         "agent": "explorer",
@@ -264,18 +281,20 @@ Format: JSON array of objects with keys: action (click/fill/navigate), selector,
                     )
 
                 # Try to find and click a navigation link to a new page
+                # Prioritize previously buggy pages first
                 navigated = False
                 links = self.browser.get_all_links()
-                for link in links:
-                    if link and link not in visited_urls and link.startswith(url):
-                        try:
-                            self.browser.navigate(link)
-                            self.browser.dismiss_overlays()
-                            visited_urls.append(link)
-                            navigated = True
-                            break
-                        except Exception:
-                            continue
+                candidate_links = [l for l in links if l and l not in visited_urls and l.startswith(url)]
+                priority_links = sorted(candidate_links, key=lambda l: l not in buggy_urls)
+                for link in priority_links:
+                    try:
+                        self.browser.navigate(link)
+                        self.browser.dismiss_overlays()
+                        visited_urls.append(link)
+                        navigated = True
+                        break
+                    except Exception:
+                        continue
 
                 if not navigated:
                     logger.info("No new links found, stopping exploration")

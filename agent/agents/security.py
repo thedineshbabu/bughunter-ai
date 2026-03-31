@@ -43,7 +43,8 @@ class SecurityAgent:
     def __init__(self):
         self.browser = BrowserTool()
 
-    def _test_xss(self, url: str) -> list:
+    def _test_xss(self, url: str, payloads: list = None) -> list:
+        payloads = payloads or XSS_PAYLOADS
         bugs = []
         try:
             self.browser.start()
@@ -51,7 +52,7 @@ class SecurityAgent:
             inputs = self.browser.get_form_inputs()
 
             for selector in inputs[:3]:  # Test first 3 inputs
-                for payload in XSS_PAYLOADS[:2]:  # Test 2 payloads per input
+                for payload in payloads[:2]:  # Test 2 payloads per input
                     try:
                         self.browser.fill_form(selector, payload)
                         self.browser.click("button[type='submit'], input[type='submit']")
@@ -80,7 +81,8 @@ class SecurityAgent:
                 pass
         return bugs
 
-    def _test_sqli(self, url: str) -> list:
+    def _test_sqli(self, url: str, payloads: list = None) -> list:
+        payloads = payloads or SQLI_PAYLOADS
         bugs = []
         try:
             self.browser.start()
@@ -88,7 +90,7 @@ class SecurityAgent:
             inputs = self.browser.get_form_inputs()
 
             for selector in inputs[:3]:
-                for payload in SQLI_PAYLOADS[:2]:
+                for payload in payloads[:2]:
                     try:
                         self.browser.fill_form(selector, payload)
                         self.browser.click("button[type='submit'], input[type='submit']")
@@ -151,16 +153,33 @@ class SecurityAgent:
             logger.error(f"Secret check failed: {exc}")
         return bugs
 
+    def _build_adaptive_payloads(self, memory: dict) -> tuple:
+        """Build XSS and SQLi payload lists, prioritizing previously effective ones."""
+        security_findings = memory.get("security_findings", [])
+        effective_xss = [f["payload"] for f in security_findings if f.get("type") == "xss" and f.get("effective") and f.get("payload")]
+        effective_sqli = [f["payload"] for f in security_findings if f.get("type") == "sqli" and f.get("effective") and f.get("payload")]
+
+        # Prepend effective payloads (test them first), then defaults, deduplicated
+        xss = list(dict.fromkeys(effective_xss + XSS_PAYLOADS))
+        sqli = list(dict.fromkeys(effective_sqli + SQLI_PAYLOADS))
+        return xss, sqli
+
     def run(self, state: AgentState) -> AgentState:
         url = state["url"]
         run_id = state.get("run_id")
         bugs_found = list(state.get("bugs_found", []))
+        memory = state.get("memory") or {}
+
+        # Build adaptive payload lists from memory
+        xss_payloads, sqli_payloads = self._build_adaptive_payloads(memory)
+        if memory.get("security_findings"):
+            logger.info(f"Using adaptive payloads: {len(xss_payloads)} XSS, {len(sqli_payloads)} SQLi")
 
         logger.info(f"Running security tests on: {url}")
         publish_event(run_id, "agent_start", {"agent": "security", "message": "Running security tests (XSS, SQLi, secrets)…"})
 
-        xss_bugs = self._test_xss(url)
-        sqli_bugs = self._test_sqli(url)
+        xss_bugs = self._test_xss(url, xss_payloads)
+        sqli_bugs = self._test_sqli(url, sqli_payloads)
         secret_bugs = self._check_exposed_secrets(url)
 
         new_bugs = xss_bugs + sqli_bugs + secret_bugs

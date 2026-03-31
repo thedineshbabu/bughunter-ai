@@ -14,6 +14,13 @@ import redis
 
 from graph.graph import build_graph
 from graph.state import AgentState
+from tools.memory import (
+    extract_and_save_skills,
+    get_app_id_for_run,
+    load_agent_skills,
+    load_app_memory,
+    save_run_memory,
+)
 from tools.storage import save_run_to_db
 
 logger = logging.getLogger("bughunter.runner")
@@ -61,6 +68,18 @@ class JobRunner:
         # Mark run as running
         self._update_run_status(run_id, "running")
 
+        # Load memory & skills from previous runs on the same app
+        app_id = get_app_id_for_run(run_id)
+        memory = {}
+        skills = []
+        if app_id:
+            memory = load_app_memory(app_id)
+            skills = load_agent_skills(app_id, "all")
+            if memory:
+                logger.info(f"Loaded memory for app={app_id}: {len(memory.get('all_buggy_pages', []))} buggy pages, {len(memory.get('run_summaries', []))} past summaries")
+            if skills:
+                logger.info(f"Loaded {len(skills)} skill(s) for app={app_id}")
+
         # Build initial state
         initial_state: AgentState = {
             "run_id": run_id,
@@ -75,6 +94,9 @@ class JobRunner:
             "error": None,
             "status": "running",
             "report": None,
+            "memory": memory,
+            "skills": skills,
+            "app_id": app_id,
         }
 
         self._publish(run_id, "agent_start", {"agent": "orchestrator", "message": "Pipeline starting…"})
@@ -83,6 +105,12 @@ class JobRunner:
             final_state = self.graph.invoke(initial_state)
             bug_count = len(final_state.get("bugs_found", []))
             save_run_to_db(run_id, "completed", final_state)
+
+            # Save memory & extract skills for future runs
+            if app_id:
+                save_run_memory(run_id, app_id, final_state)
+                extract_and_save_skills(run_id, app_id, final_state, memory)
+
             self._publish(run_id, "run_complete", {"total_bugs": bug_count, "message": f"Run completed — {bug_count} bug(s) found"})
             logger.info(f"Job {run_id} completed. Bugs found: {bug_count}")
 

@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from graph.state import AgentState
 from providers import get_llm
 from tools.events import publish_event
+from tools.memory import format_memory_for_prompt, format_skills_for_prompt
 
 logger = logging.getLogger("bughunter.orchestrator")
 
@@ -36,13 +37,29 @@ class OrchestratorAgent:
         else:
             auth_context = "No credentials provided — test as an anonymous user."
 
+        # Build memory and skills context for the prompt
+        memory = state.get("memory", {})
+        skills = state.get("skills", [])
+        memory_section = format_memory_for_prompt(memory)
+        skills_section = format_skills_for_prompt(skills, agent_type="orchestrator")
+
+        history_block = ""
+        if memory_section or skills_section:
+            history_block = f"""
+--- HISTORICAL CONTEXT (from previous runs on this same app) ---
+{memory_section}
+{skills_section}
+Use this history to prioritize previously buggy areas and refine your strategy.
+--- END HISTORICAL CONTEXT ---
+"""
+
         prompt = f"""You are a senior QA engineer. Analyze this web application URL and create a testing strategy.
 
 URL: {url}
 Auth context: {auth_context}
-
+{history_block}
 Provide:
-1. Key pages/flows to test (home, login, dashboard, forms, etc.)
+1. Key pages/flows to test — prioritize previously buggy areas if history is available
 2. Critical user journeys
 3. Common bug-prone areas to focus on
 4. Notes on authentication strategy based on the auth context above

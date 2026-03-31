@@ -21,13 +21,31 @@ class ReporterAgent:
     def __init__(self):
         self.llm = get_llm()
 
-    def _generate_report(self, bug: dict) -> dict:
+    def _generate_report(self, bug: dict, known_bugs: list = None) -> dict:
         """Use Claude to enrich a raw bug observation into a full bug report."""
+        regression_note = ""
+        if known_bugs:
+            page_url = bug.get("page_url", "")
+            fixed_on_page = [
+                b for b in known_bugs
+                if b.get("status") == "fixed" and b.get("page_url") == page_url
+            ]
+            for kb in fixed_on_page:
+                # Simple title similarity check
+                if kb.get("title", "").lower()[:30] in bug.get("title", "").lower() or \
+                   bug.get("title", "").lower()[:30] in kb.get("title", "").lower():
+                    regression_note = (
+                        f"\nREGRESSION ALERT: A similar bug was previously found and marked as FIXED: "
+                        f"'{kb['title']}'. If this is the same issue, mark type as 'regression' "
+                        f"and note that it is a recurring problem.\n"
+                    )
+                    break
+
         prompt = f"""You are a senior QA engineer writing a professional bug report.
 
 Raw bug observation:
 {json.dumps(bug, indent=2)}
-
+{regression_note}
 Generate a structured bug report with these exact fields:
 {{
   "title": "concise, descriptive title (max 100 chars)",
@@ -36,7 +54,7 @@ Generate a structured bug report with these exact fields:
   "expected_behavior": "what should happen",
   "actual_behavior": "what actually happens",
   "severity": "critical|high|medium|low",
-  "type": "functional|security|ui|performance|data",
+  "type": "functional|security|ui|performance|data|regression",
   "page_url": "URL where the bug was found",
   "screenshot_url": null
 }}
@@ -69,12 +87,14 @@ Return ONLY the JSON object, no extra text.
     def run(self, state: AgentState) -> AgentState:
         bugs_found = state.get("bugs_found", [])
         run_id = state.get("run_id")
+        memory = state.get("memory") or {}
+        known_bugs = memory.get("previous_bugs", [])
         logger.info(f"Generating reports for {len(bugs_found)} bug(s)")
         publish_event(run_id, "agent_start", {"agent": "reporter", "message": f"Writing structured reports for {len(bugs_found)} bug(s)…"})
 
         structured_reports = []
         for raw_bug in bugs_found:
-            report = self._generate_report(raw_bug)
+            report = self._generate_report(raw_bug, known_bugs)
             # Preserve screenshot_url if present on the original bug
             if "screenshot_url" in raw_bug and not report.get("screenshot_url"):
                 report["screenshot_url"] = raw_bug["screenshot_url"]
